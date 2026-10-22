@@ -4,6 +4,7 @@
 #include "game/GameBuild.h"
 #include "game/Pfs.h"
 #include "game/Stream.h"
+#include "hw/Ipu.h"
 
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
@@ -53,8 +54,10 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
 
     pfs_ = std::make_unique<Pfs>(gameDataDir);
     pfs_->install(*runtime_);
-    stream_ = std::make_unique<Stream>();
+    stream_ = std::make_unique<Stream>(*pfs_);
     stream_->install(*runtime_);
+    ipu_ = std::make_unique<hw::Ipu>();
+    runtime_->memory().setIpuDevice(ipu_.get());
 
     runtime_->startGuest();
     started_ = true;
@@ -135,6 +138,8 @@ void Guest::stop()
         runtime_->stopGuest();
         started_ = false;
     }
+    if (runtime_)
+        runtime_->memory().setIpuDevice(nullptr);
 }
 
 } // namespace tgr::game

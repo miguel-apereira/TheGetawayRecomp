@@ -135,6 +135,12 @@ void Pfs::install(PS2Runtime& runtime)
 
 void Pfs::serve(std::uint8_t* rdram, std::uint32_t function, std::uint32_t send, std::uint32_t sendSize)
 {
+    // Reads queued by earlier calls finish now rather than at the next vblank:
+    // the game streams movies with more reads per frame than it has status
+    // slots (64), and stalls when they run out. (A read can't finish inside
+    // its own call: the EE marks it in flight only after the call returns.)
+    finishQueuedReads(rdram);
+
     const std::uint8_t* data = sendSize ? eeMemory(rdram, send, sendSize) : nullptr;
     switch (function)
     {
@@ -223,12 +229,7 @@ void Pfs::onVBlank(std::uint8_t* rdram)
         return;
     }
 
-    while (!requests_.empty())
-    {
-        const Request request = std::move(requests_.front());
-        requests_.pop_front();
-        finishRead(rdram, request);
-    }
+    finishQueuedReads(rdram);
     while (!eeCalls_.empty())
     {
         const EeCall& call = eeCalls_.front();
@@ -242,7 +243,8 @@ void Pfs::openIopPack(const std::string& name)
 {
     const DiscFile* file = fileNamed(name);
     std::string error;
-    iopPack_ = file ? disc::PakArchive::openFile(dataDir_ / file->path, error) : nullptr;
+    iopPackPath_ = file ? dataDir_ / file->path : fs::path();
+    iopPack_ = file ? disc::PakArchive::openFile(iopPackPath_, error) : nullptr;
     if (!iopPack_)
         log::error("[PFS] cannot open IOP pack {}: {}", name, file ? error : "not on the disc");
     else
@@ -250,10 +252,10 @@ void Pfs::openIopPack(const std::string& name)
 }
 
 // IOP files are looked up by name in PACK_IOP.PAK, like PFS_Search does.
-bool Pfs::readIopFile(const std::string& name, std::vector<std::uint8_t>& data)
+const disc::PakEntry* Pfs::findIopFile(const std::string& name) const
 {
     if (!iopPack_)
-        return false;
+        return nullptr;
     std::string wanted = discName(name);
     std::transform(wanted.begin(), wanted.end(), wanted.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
@@ -266,17 +268,52 @@ bool Pfs::readIopFile(const std::string& name, std::vector<std::uint8_t>& data)
         // A whole path component has to match, not just the end of a name.
         if (entry.path.size() > wanted.size() && entry.path[entry.path.size() - wanted.size() - 1] != '/')
             continue;
-        std::string error;
-        auto contents = iopPack_->read(entry, error);
-        if (!contents)
-        {
-            log::error("[PFS] cannot read {}: {}", entry.path, error);
-            return false;
-        }
-        data = std::move(*contents);
-        return true;
+        return &entry;
     }
-    return false;
+    return nullptr;
+}
+
+bool Pfs::readIopFile(const std::string& name, std::vector<std::uint8_t>& data)
+{
+    const disc::PakEntry* entry = findIopFile(name);
+    if (!entry)
+        return false;
+    std::string error;
+    auto contents = iopPack_->read(*entry, error);
+    if (!contents)
+    {
+        log::error("[PFS] cannot read {}: {}", entry->path, error);
+        return false;
+    }
+    data = std::move(*contents);
+    return true;
+}
+
+double Pfs::iopSoundSeconds(const std::string& name)
+{
+    const disc::PakEntry* entry = findIopFile(name);
+    if (!entry)
+        return 0;
+    std::vector<std::uint8_t> header;
+    if (entry->compressed)
+    {
+        if (!readIopFile(name, header))
+            return 0;
+    }
+    else if (!readFile(iopPackPath_, std::uint64_t{entry->sector} * kSectorSize, 0x30, header))
+    {
+        return 0;
+    }
+    // VAG header: "VAGp", then big-endian data size at 0x0C and sample rate at 0x10.
+    const auto be32 = [&](std::size_t at) {
+        return std::uint32_t{header[at]} << 24 | std::uint32_t{header[at + 1]} << 16 |
+               std::uint32_t{header[at + 2]} << 8 | header[at + 3];
+    };
+    if (header.size() < 0x30 || std::memcmp(header.data(), "VAGp", 4) != 0)
+        return 0;
+    const std::uint32_t bytes = be32(0x0C);
+    const std::uint32_t rate = be32(0x10);
+    return rate ? (bytes / 16.0) * 28.0 / rate : 0;
 }
 
 void Pfs::loadStreamSlot(std::uint32_t slot, const std::string& name)
@@ -316,6 +353,16 @@ void Pfs::loadXmlPack(const std::string& name)
     xmlPack_ = std::move(data);
     log::info("[PFS] XML sound pack {} ({} bytes)", name, xmlPack_.size());
     eeCalls_.push_back(EeCall{XmlPackLoaded});
+}
+
+void Pfs::finishQueuedReads(std::uint8_t* rdram)
+{
+    while (!requests_.empty())
+    {
+        const Request request = std::move(requests_.front());
+        requests_.pop_front();
+        finishRead(rdram, request);
+    }
 }
 
 void Pfs::openEePack(const std::string& name)

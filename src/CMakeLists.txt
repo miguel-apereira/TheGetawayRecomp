@@ -23,7 +23,7 @@ target_link_libraries(TheGetawayRecomp PRIVATE tgr_core SDL3::SDL3-static volk)
 tgr_set_project_options(TheGetawayRecomp)
 
 if(TGR_WITH_RECOMPILED_CODE)
-    target_sources(TheGetawayRecomp PRIVATE game/RecompiledCode.cpp game/Pfs.cpp game/Stream.cpp)
+    target_sources(TheGetawayRecomp PRIVATE game/RecompiledCode.cpp game/Pfs.cpp game/Stream.cpp hw/Ipu.cpp)
     target_link_libraries(TheGetawayRecomp PRIVATE tgr_recompiled)
     target_compile_definitions(TheGetawayRecomp PRIVATE TGR_WITH_RECOMPILED_CODE=1)
 endif()

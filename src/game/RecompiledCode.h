@@ -11,6 +11,11 @@
 
 class PS2Runtime;
 
+namespace tgr::hw
+{
+class Ipu;
+}
+
 // The C++ that ps2_recomp generated from SCUS_971.33 (recomp/generated),
 // linked in when TGR_WITH_RECOMPILED_CODE is on.
 namespace tgr::game
@@ -43,7 +48,7 @@ public:
 
     // Loads the boot ELF from the game data folder, which also becomes the
     // guest's cdrom0: root, puts our native IOP modules in place of the
-    // game's, and starts the guest thread.
+    // game's and our native IPU in the machine, and starts the guest thread.
     bool start(const std::filesystem::path& gameDataDir, std::string& error);
 
     // True once the guest thread has returned or died.
@@ -77,6 +82,7 @@ private:
     std::unique_ptr<PS2Runtime> runtime_;
     std::unique_ptr<Pfs> pfs_;
     std::unique_ptr<Stream> stream_;
+    std::unique_ptr<hw::Ipu> ipu_;
     bool started_ = false;
 };
 

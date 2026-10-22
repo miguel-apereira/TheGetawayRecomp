@@ -47,10 +47,6 @@ stubs = [
   "sceVu0RotMatrixZ@0x0030D810",
   "sceVu0RotMatrixX@0x0030D8B8",
   "sceVu0RotMatrixY@0x0030D960",
-  "sceIpuStopDMA@0x0030DB10",
-  "sceIpuRestartDMA@0x0030DBF8",
-  "sceIpuSync@0x0030DD48",
-  "sceIpuInit@0x0030DE18",
   "scePadInit@0x0030E180",
   "scePadInit2@0x0030E2C0",
   "scePadPortOpen@0x0030E360",
@@ -245,10 +241,10 @@ skip = []
 function_count = 8043
 code_label_count = 38835
 csv_record_count = 46878
-stub_count = 189
+stub_count = 185
 untracked_stub_count = 23
 skip_count = 0
-uncategorized_count = 7831
+uncategorized_count = 7835
 runtime_call_name_count = 656
 runtime_call_source = "embedded_ps2_call_list_snapshot"
 

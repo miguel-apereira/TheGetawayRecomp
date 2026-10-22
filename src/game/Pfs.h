@@ -22,7 +22,8 @@ class PS2Runtime;
 //
 // Here the reads come from the game data folder the disc was extracted to,
 // using disc_layout.tsv to turn sectors back into files. Queued reads finish
-// on the next vertical blank, like the original's vblank-driven main loop.
+// on the next vertical blank, like the original's vblank-driven main loop, or
+// at the next call from the EE, whichever comes first.
 //
 // PFS also loads sound data from PACK_IOP.PAK into IOP memory for STREAM.IRX:
 // an XML sound pack and two stream slots. Those are kept here, by name, for
@@ -39,6 +40,10 @@ public:
 
     // Replaces PFS.IRX in the runtime: its module load, RPC server and main loop.
     void install(PS2Runtime& runtime);
+
+    // Playing time of a sound file in PACK_IOP.PAK, from its VAG header
+    // (STREAM.IRX's files). Zero when the file or its header is not found.
+    double iopSoundSeconds(const std::string& name);
 
 private:
     // One queued read, as the EE sends it (0x70 bytes).
@@ -71,8 +76,10 @@ private:
     void onVBlank(std::uint8_t* rdram);
 
     void queueRead(std::uint8_t* rdram, std::uint32_t send);
+    void finishQueuedReads(std::uint8_t* rdram);
     void openEePack(const std::string& name);
     void openIopPack(const std::string& name);
+    const disc::PakEntry* findIopFile(const std::string& name) const;
     bool readIopFile(const std::string& name, std::vector<std::uint8_t>& data);
     void loadStreamSlot(std::uint32_t slot, const std::string& name);
     void loadXmlPack(const std::string& name);
@@ -100,6 +107,7 @@ private:
     std::uint32_t eeStreamSize_ = 0;
 
     std::unique_ptr<disc::PakArchive> iopPack_;
+    std::filesystem::path iopPackPath_;
     std::vector<std::uint8_t> xmlPack_;
     std::array<std::vector<std::uint8_t>, 2> streamSlots_;
 

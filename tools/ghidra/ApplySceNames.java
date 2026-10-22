@@ -8,8 +8,9 @@
 //
 // Arguments: the TOML ps2_analyzer wrote, then any hand-made list of names
 // (recomp/config/SCUS-97133.names.toml). Every "name@0xADDRESS" string in
-// them is applied. Names given by hand in the Ghidra project are kept; a missing
-// function is created when the address is not inside another one.
+// them is applied. Hand-made names win over the database's; names given in
+// the Ghidra project itself are kept for database matches. A missing function
+// is created when the address is not inside another one.
 //
 // Run by tools/scripts/analyze-ghidra.ps1 before ExportPS2Functions.java.
 //@category PS2
@@ -36,11 +37,15 @@ public class ApplySceNames extends GhidraScript {
             return;
         }
 
-        StringBuilder text = new StringBuilder();
-        for (String arg : args) {
-            text.append(Files.readString(Path.of(arg))).append(System.lineSeparator());
+        int[] counts = new int[3]; // renamed, created, kept
+        for (int i = 0; i < args.length; ++i) {
+            apply(Files.readString(Path.of(args[i])), i > 0, counts);
         }
+        println("ApplySceNames: " + counts[0] + " functions renamed, " + counts[1] + " created, " + counts[2] +
+                " already named and kept");
+    }
 
+    private void apply(String text, boolean byHand, int[] counts) throws Exception {
         int renamed = 0;
         int created = 0;
         int kept = 0;
@@ -69,7 +74,7 @@ public class ApplySceNames extends GhidraScript {
             if (function.getName().equals(name)) {
                 continue;
             }
-            if (function.getSymbol().getSource() != SourceType.DEFAULT) {
+            if (!byHand && function.getSymbol().getSource() != SourceType.DEFAULT) {
                 ++kept;
                 continue;
             }
@@ -77,8 +82,9 @@ public class ApplySceNames extends GhidraScript {
             ++renamed;
         }
 
-        println("ApplySceNames: " + renamed + " functions renamed, " + created + " created, " + kept +
-                " already named and kept");
+        counts[0] += renamed;
+        counts[1] += created;
+        counts[2] += kept;
     }
 
     // A few library names occur twice (static helpers in two objects); the
