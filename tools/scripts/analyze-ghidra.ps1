@@ -2,15 +2,25 @@
 #
 # Imports iso\extracted\SCUS_971.33 into a headless Ghidra project under
 # recomp\ghidra (git-ignored), auto-analyses it with the Emotion Engine
-# extension, and runs PS2Recomp's ExportPS2Functions.java. The function map
-# goes to recomp\config\SCUS-97133.functions.csv and the generated TOML is
-# rewritten with repo-relative paths into recomp\config\SCUS-97133.toml.
+# extension, then runs three scripts:
+#
+#   ApplySceNames.java           names the Sony SDK and libc functions that
+#                                PS2Recomp's ps2_analyzer finds with its SCE
+#                                symbol database, so the runtime replaces them
+#   CreatePointerFunctions.java  creates the functions only reachable through
+#                                pointers in data (vtables, callbacks)
+#   ExportPS2Functions.java      PS2Recomp's exporter
+#
+# The function map goes to recomp\config\SCUS-97133.functions.csv and the
+# generated TOML is rewritten with repo-relative paths into
+# recomp\config\SCUS-97133.toml.
 #
 # If the Ghidra project already exists it is only re-exported, so names and
 # fixes made in the Ghidra GUI are kept. Pass -Reanalyze to start over.
 
 param(
     [string]$GhidraDir = $env:GHIDRA_INSTALL_DIR,
+    [string]$Preset = 'msvc-debug',
     [switch]$Reanalyze
 )
 
@@ -24,6 +34,7 @@ $exportDir = Join-Path $projectDir 'export'
 $configToml = Join-Path $RepoRoot 'recomp\config\SCUS-97133.toml'
 $configCsv = Join-Path $RepoRoot 'recomp\config\SCUS-97133.functions.csv'
 $exporterDir = Join-Path $RepoRoot 'external\PS2Recomp\ps2xRecomp\tools\ghidra'
+$ourScriptDir = Join-Path $RepoRoot 'tools\ghidra'
 
 if (-not (Test-Path $elf)) {
     throw "$elf is missing. Run tools\scripts\extract-disc.ps1 first."
@@ -55,6 +66,11 @@ if ($Reanalyze -and (Test-Path $projectDir)) {
 }
 New-Item -ItemType Directory -Force -Path $exportDir | Out-Null
 
+# Sony SDK names from ps2_analyzer's embedded SCE symbol database. Its own
+# function map and TOML are not used, only the names in them.
+$sceToml = Join-Path $exportDir 'sce-symbols.toml'
+Invoke-Native (Find-BuiltTool 'ps2_analyzer' $Preset) @((Resolve-Path $elf).Path, $sceToml)
+
 $exportToml = Join-Path $exportDir 'SCUS-97133.toml'
 $headless = @($projectDir, $projectName)
 if (Test-Path (Join-Path $projectDir "$projectName.gpr")) {
@@ -63,7 +79,9 @@ if (Test-Path (Join-Path $projectDir "$projectName.gpr")) {
     $headless += @('-import', (Resolve-Path $elf).Path, '-processor', 'r5900:LE:32:default', '-analysisTimeoutPerFile', '3600')
 }
 $headless += @(
-    '-scriptPath', $exporterDir,
+    '-scriptPath', "$ourScriptDir;$exporterDir",
+    '-postScript', 'ApplySceNames.java', $sceToml,
+    '-postScript', 'CreatePointerFunctions.java',
     '-postScript', 'ExportPS2Functions.java', $exportToml, $configCsv,
     '-log', (Join-Path $exportDir 'headless.log'),
     '-scriptlog', (Join-Path $exportDir 'script.log')

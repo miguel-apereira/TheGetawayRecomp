@@ -7,6 +7,8 @@ is committed except the hand-maintained config in `recomp/config/`.
 your ISO ──tgr-disc──▶ iso/extracted/SCUS_971.33 (+ IRX modules)
                               │
                         Ghidra + EE extension
+                              │  ApplySceNames.java (names from ps2_analyzer)
+                              │  CreatePointerFunctions.java
                               │  ExportPS2Functions.java
                               ▼
                recomp/config/SCUS-97133.toml + .functions.csv
@@ -62,17 +64,40 @@ the ISO.
 
    It imports `iso/extracted/SCUS_971.33` into a headless project under
    `recomp/ghidra/` (git-ignored) with the `r5900:LE:32:default` language,
-   runs auto-analysis (a few minutes), then runs
-   `external/PS2Recomp/ps2xRecomp/tools/ghidra/ExportPS2Functions.java` and
-   writes `recomp/config/SCUS-97133.toml` and
-   `recomp/config/SCUS-97133.functions.csv` with repo-relative paths.
+   runs auto-analysis (a few minutes), then three scripts:
+   - `tools/ghidra/ApplySceNames.java` names the Sony SDK and libc
+     functions (see below);
+   - `tools/ghidra/CreatePointerFunctions.java` creates the functions only
+     reachable through pointers in data (see below);
+   - `external/PS2Recomp/ps2xRecomp/tools/ghidra/ExportPS2Functions.java`
+     writes `recomp/config/SCUS-97133.toml` and
+     `recomp/config/SCUS-97133.functions.csv` with repo-relative paths.
 3. When the project already exists the script only re-exports, so renames
    and fixes made in the Ghidra GUI carry into the config. `-Reanalyze`
    throws the project away and starts again.
 
 The ELF is stripped, so almost every function is `FUN_<address>`. The
 exporter recognises the EE kernel syscall wrappers (`CreateThread`,
-`sceSifSetDma`, ...) and lists them as `stubs`. `.vutext` and the
+`sceSifSetDma`, ...) and lists them as `stubs`.
+
+Before exporting, the script runs PS2Recomp's `ps2_analyzer` (built next to
+`ps2_recomp`) only for its embedded SCE SDK symbol database, and
+`ApplySceNames.java` gives Ghidra's unnamed functions the names it finds:
+347 for SCUS-97133 (`sceSifInitRpc`, `scePadRead`, `sceCdInit`, `memcpy`,
+...). The exporter then lists the ones the runtime implements as `stubs`, so
+the game's own copies of the SIF, CD, pad, memory card, DMA and GS libraries
+are replaced instead of poking hardware that is not there. Names already
+given by hand in the Ghidra project are kept.
+
+Ghidra's analysis also misses functions that nothing calls directly: C++
+virtual methods and callbacks whose only reference is a pointer in `.data`
+or `.rodata`. `CreatePointerFunctions.java` creates a function at every such
+pointer that lands outside any function right after a `jr $ra` or padding
+(443 for SCUS-97133). It also labels the landing pads listed in
+`.gcc_except_table` (17, all in libstdc++), so the exception unwinder's
+jumps to them are dispatchable entries.
+
+`.vutext` and the
 `.DVP.overlay.*` sections are VU microcode, not EE code, and are not in the
 function map.
 
@@ -95,8 +120,10 @@ The 85 functions still on the fallback are switch heads that Ghidra split
 from their cases with a label (every case is a registered entry, so the jump
 is dispatched at run time), one tail call through a global function pointer
 (`0x30c264`), and three functions at `0x328968`-`0x329520` that restore
-`sp`/`fp` and jump to a saved address. Those look like the C++ exception
-unwinder; their landing pads need to be entry points if the game throws.
+`sp`/`fp` and jump to a saved address. Those are the C++ exception
+unwinder (`__sjthrow`, `throw_helper`, `__rethrow`); its landing pads are
+entry points (see above). Only libstdc++ has exception tables, so the game
+itself does not throw.
 
 ## 3. Recompile
 
@@ -104,7 +131,7 @@ unwinder; their landing pads need to be entry points if the game throws.
 tools\scripts\recompile.ps1
 ```
 
-Writes C++ to `recomp/generated/`.
+Clears `recomp/generated/` and writes the C++ there.
 
 ## 4. Build with the generated code
 
@@ -116,8 +143,18 @@ This turns on `TGR_WITH_RECOMPILED_CODE`, which compiles `recomp/generated/`
 into `tgr_recompiled` and links PS2Recomp's runtime. The runtime is built
 without FFmpeg (FMV will go through our own IPU decoder), without its ImGui
 debug panel, and without per-function entry logging. On startup the exe logs
-how many guest entry points the generated function table holds.
+how many guest entry points the generated function table holds, then loads
+`SCUS_971.33` from the game data folder and starts the game on its own
+thread while our SDL3 window shows a placeholder frame.
 
-> PS2Recomp's runtime currently brings its own raylib-based window and
-> debug UI. Moving its host side onto our SDL3 + Vulkan layer is one of the
-> first integration tasks.
+`--headless` runs the game with no window and no dialogs, logging the guest
+PC every two seconds; `--seconds N` stops it after N seconds. Use it on
+machines without a working Vulkan driver:
+
+```powershell
+builds\msvc-debugin\TheGetawayRecomp.exe --headless --seconds 60
+```
+
+The runtime's own raylib window is not used: our fork adds
+`PS2Runtime::initializeCore()` and `startGuest()` so the host drives it.
+IOP modules (`.IRX`) currently run on PS2Recomp's R3000A interpreter.
