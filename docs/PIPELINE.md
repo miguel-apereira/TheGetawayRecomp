@@ -79,6 +79,25 @@ function map.
 Function maps, stub lists and patch addresses are our own analysis work and
 are committed. The disassembly and the Ghidra database are not.
 
+The script also adds our own settings to the exported TOML, so they survive
+a re-export:
+
+- `jalr_indirect_fallback = false`. Without it, `ps2_recomp` turns every
+  instruction of a function that calls through a function pointer (`jalr`)
+  into a resumable entry, as if the call could land anywhere. An indirect
+  call returns to its own resume entry, so only unresolved `jr` jumps get
+  that treatment. For SCUS-97133 this takes the fallback from 2,937
+  functions (337,695 entries) to 85 (1,796).
+- Everything in `recomp/config/SCUS-97133.manual.toml`, appended as is:
+  jump tables `ps2_recomp` cannot find on its own, and later patches.
+
+The 85 functions still on the fallback are switch heads that Ghidra split
+from their cases with a label (every case is a registered entry, so the jump
+is dispatched at run time), one tail call through a global function pointer
+(`0x30c264`), and three functions at `0x328968`-`0x329520` that restore
+`sp`/`fp` and jump to a saved address. Those look like the C++ exception
+unwinder; their landing pads need to be entry points if the game throws.
+
 ## 3. Recompile
 
 ```powershell
@@ -94,7 +113,10 @@ tools\scripts\build.ps1 -WithRecompiledCode
 ```
 
 This turns on `TGR_WITH_RECOMPILED_CODE`, which compiles `recomp/generated/`
-into `tgr_recompiled` and links PS2Recomp's runtime.
+into `tgr_recompiled` and links PS2Recomp's runtime. The runtime is built
+without FFmpeg (FMV will go through our own IPU decoder), without its ImGui
+debug panel, and without per-function entry logging. On startup the exe logs
+how many guest entry points the generated function table holds.
 
 > PS2Recomp's runtime currently brings its own raylib-based window and
 > debug UI. Moving its host side onto our SDL3 + Vulkan layer is one of the

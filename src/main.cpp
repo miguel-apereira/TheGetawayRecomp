@@ -15,6 +15,9 @@
 #include "disc/GameDisc.h"
 #include "disc/IsoImage.h"
 #include "game/GameBuild.h"
+#ifdef TGR_WITH_RECOMPILED_CODE
+#include "game/RecompiledCode.h"
+#endif
 #include "host/VulkanRenderer.h"
 
 #include <SDL3/SDL.h>
@@ -210,6 +213,11 @@ int main(int argc, char** argv)
 {
     const Options options = parseArgs(argc, argv);
     log::info("TheGetawayRecomp: {} {} ({})", game::kTitle, game::kSerial, game::kRegion);
+#ifdef TGR_WITH_RECOMPILED_CODE
+    const game::RecompiledCodeInfo recompiled = game::recompiledCodeInfo();
+    log::info("Recompiled code: {} entry points, guest PC 0x{:08X}-0x{:08X}", recompiled.entryCount,
+              recompiled.tableBase, recompiled.tableEnd);
+#endif
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     {

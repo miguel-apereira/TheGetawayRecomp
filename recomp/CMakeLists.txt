@@ -20,7 +20,9 @@ target_include_directories(tgr_recompiled PUBLIC "${TGR_GENERATED_DIR}")
 target_link_libraries(tgr_recompiled PUBLIC ps2_runtime)
 
 # Thousands of small generated files: batch them, and skip warnings we cannot fix.
+# The function table (one statement per entry point) is big enough on its own.
 set_target_properties(tgr_recompiled PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 32)
+set_source_files_properties("${TGR_GENERATED_DIR}/register_functions.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 if(MSVC)
     target_compile_options(tgr_recompiled PRIVATE /bigobj /W0)
 else()

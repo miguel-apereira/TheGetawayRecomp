@@ -70,5 +70,11 @@ if(TGR_WITH_RECOMPILED_CODE)
     set(PS2X_BUILD_ANALYZER OFF CACHE BOOL "" FORCE)
     set(PS2X_BUILD_TEST     OFF CACHE BOOL "" FORCE)
     set(PS2X_BUILD_STUDIO   OFF CACHE BOOL "" FORCE)
+    # No prebuilt FFmpeg DLLs (FMV gets our own IPU decoder), no ImGui debug
+    # panel (it only builds into PS2Recomp's own runner), and no per-function
+    # entry logging in every generated function.
+    set(PS2X_ENABLE_FFMPEG          OFF CACHE BOOL "" FORCE)
+    set(PS2X_ENABLE_DEBUG_UI        OFF CACHE BOOL "" FORCE)
+    set(PS2X_ENABLE_AGRESSIVE_LOGS  OFF CACHE BOOL "" FORCE)
     add_subdirectory("${TGR_EXTERNAL_DIR}/PS2Recomp" EXCLUDE_FROM_ALL)
 endif()
