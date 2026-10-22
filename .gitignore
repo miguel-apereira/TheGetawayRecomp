@@ -1,0 +1,92 @@
+# ---------------------------------------------------------------------------
+# Game data: NEVER commit anything that comes from the disc.
+# Users supply their own dump of The Getaway (SCUS-97133).
+# ---------------------------------------------------------------------------
+
+# Everything in iso/ except its README
+/iso/*
+!/iso/README.md
+
+# Disc images and dumps, wherever they end up
+*.iso
+*.ISO
+*.bin
+*.BIN
+*.img
+*.IMG
+*.mdf
+*.mds
+*.nrg
+*.cue
+*.chd
+*.cso
+*.zso
+*.gz.iso
+
+# Game data folder the exe extracts the disc into on first run
+/game/
+disc_layout.tsv
+
+# Files extracted from the disc (boot ELF, IRX modules, archives, video)
+SCUS_971.33
+SCUS_971.33.*
+*.elf
+*.ELF
+*.irx
+*.IRX
+*.pss
+*.pak
+*.PAK
+*.PSS
+SYSTEM.CNF
+
+# BIOS, memory cards and save states
+*.rom0
+*.rom1
+*.rom2
+*.erom
+scph*.bin
+*.ps2
+*.mcd
+*.p2s
+*.sstates
+
+# Dumps captured from a running game (RAM, VU microcode, GS)
+*.dmp
+*.ramdump
+*.gsdump
+/recomp/dumps/
+
+# ---------------------------------------------------------------------------
+# Generated code and build output
+# ---------------------------------------------------------------------------
+
+# C++ produced by ps2_recomp from the user's ELF: derived from game code
+/recomp/generated/
+
+# Ghidra project databases (contain the disassembled game)
+*.gpr
+*.rep/
+*.lock
+*.lock~
+/recomp/ghidra/
+
+# CMake / build trees
+/builds/
+/out/
+CMakeUserPresets.json
+compile_commands.json
+
+# ---------------------------------------------------------------------------
+# Tools and editors
+# ---------------------------------------------------------------------------
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+*.log
+Thumbs.db
+desktop.ini
+.DS_Store
