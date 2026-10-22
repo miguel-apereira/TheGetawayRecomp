@@ -6,9 +6,10 @@ to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp), and the PS2
 hardware it talked to (GS, VU, IOP, SPU2, IPU) is replaced with native code
 on SDL3 and Vulkan instead of being emulated.
 
-> **Status:** exploring. The project builds a host shell that asks for your
-> ISO, checks it, extracts it once, and opens a Vulkan window. No game code
-> runs yet.
+> **Status:** first boot. The exe asks for your ISO, checks it, extracts it
+> once, opens a Vulkan window and runs the recompiled game code, which gets
+> through kernel and SIF start-up and loads its IOP modules. Nothing is drawn
+> yet.
 
 ## You need your own copy of the game
 
@@ -39,7 +40,8 @@ folder is ignored by git. See [iso/README.md](iso/README.md).
   (includes MSVC, CMake and Ninja)
 - Git
 - A GPU with Vulkan 1.2 drivers
-- Optional: the [Vulkan SDK](https://vulkan.lunarg.com/) for validation layers
+- Developers only, optional: the [Vulkan SDK](https://vulkan.lunarg.com/)
+  for validation layers (`--validation`). Players only need a GPU driver.
 - For analysis: [Ghidra](https://ghidra-sre.org/) with the
   [Emotion Engine extension](https://github.com/chaoticgd/ghidra-emotionengine-reloaded),
   and PCSX2 as a reference

@@ -93,8 +93,7 @@ bool VulkanRenderer::createInstance(bool enableValidation)
         if (hasLayer(kValidationLayer))
             layers.push_back(kValidationLayer);
         else
-            log::warn("Vulkan validation requested but {} is not installed (install the Vulkan SDK)",
-                      kValidationLayer);
+            log::warn("--validation needs {} from the Vulkan SDK; running without it", kValidationLayer);
     }
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};

@@ -6,9 +6,10 @@
 // build, and extract it once into the game data folder (next to the exe by
 // default). Later runs start straight from that folder.
 //
-// Current milestone: after the game data is in place, bring up the SDL3
-// window with a Vulkan swapchain. The recompiled game code is linked in once
-// TGR_WITH_RECOMPILED_CODE is enabled.
+// After the game data is in place, bring up the SDL3 window with a Vulkan
+// swapchain and, when TGR_WITH_RECOMPILED_CODE is enabled, start the
+// recompiled game on its own thread. --headless runs the game with no window
+// at all, for machines without a usable Vulkan driver and for automated runs.
 
 #include "app/Log.h"
 #include "disc/GameData.h"
@@ -24,6 +25,8 @@
 #include <SDL3/SDL_main.h>
 
 #include <atomic>
+#include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <mutex>
@@ -49,15 +52,17 @@ struct Options
     std::optional<fs::path> isoPath;  // --iso: on first run, install from this image without asking
     std::optional<fs::path> dataPath; // --data: game data folder
     bool reinstall = false;           // --reinstall: extract again even if installed
-    bool validation = false;
+    bool validation = false;          // --validation: Vulkan validation layer (Vulkan SDK, developers only)
+    bool headless = false;            // --headless: no window, no dialogs; log only
+    double seconds = 0;               // --seconds: stop the game after this long (0: run until it exits)
 };
+
+// Set from --headless: errors go to the log only, never to a message box.
+bool g_headless = false;
 
 Options parseArgs(int argc, char** argv)
 {
     Options options;
-#ifndef NDEBUG
-    options.validation = true;
-#endif
     for (int i = 1; i < argc; ++i)
     {
         const std::string_view arg = argv[i];
@@ -69,8 +74,10 @@ Options parseArgs(int argc, char** argv)
             options.reinstall = true;
         else if (arg == "--validation")
             options.validation = true;
-        else if (arg == "--no-validation")
-            options.validation = false;
+        else if (arg == "--headless")
+            options.headless = true;
+        else if (arg == "--seconds" && i + 1 < argc)
+            options.seconds = std::atof(argv[++i]);
         else
             log::warn("Unknown argument: {}", arg);
     }
@@ -86,7 +93,8 @@ fs::path defaultDataPath()
 void showError(SDL_Window* window, const std::string& message)
 {
     log::error("{}", message);
-    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TheGetawayRecomp", message.c_str(), window);
+    if (!g_headless)
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "TheGetawayRecomp", message.c_str(), window);
 }
 
 // Shows a native "open file" dialog and waits for it while keeping the window
@@ -170,13 +178,17 @@ bool installFromIso(SDL_Window* window, const fs::path& isoPath, const fs::path&
         const int percent = total ? static_cast<int>(done * 100 / total) : 100;
         if (percent != lastPercent)
         {
-            SDL_SetWindowTitle(window, std::format("The Getaway - extracting your disc: {}%", percent).c_str());
+            if (window)
+                SDL_SetWindowTitle(window, std::format("The Getaway - extracting your disc: {}%", percent).c_str());
+            else if (percent % 10 == 0)
+                log::info("Extracting: {}%", percent);
             lastPercent = percent;
         }
         SDL_Delay(50);
     }
     worker.join();
-    SDL_SetWindowTitle(window, "The Getaway");
+    if (window)
+        SDL_SetWindowTitle(window, "The Getaway");
 
     if (!ok)
         showError(window, error);
@@ -193,6 +205,12 @@ bool ensureGameData(SDL_Window* window, const Options& options, const fs::path& 
     }
 
     std::optional<fs::path> isoPath = options.isoPath;
+    if (!isoPath && options.headless)
+    {
+        showError(window, std::format("No game data in {}. Run once with --iso <your .iso> to extract it.",
+                                      dataPath.string()));
+        return false;
+    }
     if (!isoPath)
     {
         SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "TheGetawayRecomp",
@@ -207,17 +225,77 @@ bool ensureGameData(SDL_Window* window, const Options& options, const fs::path& 
     return installFromIso(window, *isoPath, dataPath);
 }
 
+#ifdef TGR_WITH_RECOMPILED_CODE
+// Starts the recompiled game on its own thread.
+bool startGuest(SDL_Window* window, game::Guest& guest, const fs::path& dataPath)
+{
+    std::string error;
+    if (!guest.start(dataPath, error))
+    {
+        showError(window, error);
+        return false;
+    }
+    log::info("Game started at guest PC 0x{:08X}", guest.pc());
+    return true;
+}
+#endif
+
+// No window: runs the game until it exits, --seconds runs out, or the process
+// is killed, logging the guest PC every two seconds.
+int runHeadless(const Options& options, const fs::path& dataPath)
+{
+    if (!ensureGameData(nullptr, options, dataPath))
+        return 1;
+
+#ifdef TGR_WITH_RECOMPILED_CODE
+    game::Guest guest;
+    if (!startGuest(nullptr, guest, dataPath))
+        return 1;
+
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point begin = Clock::now();
+    Clock::time_point nextReport = begin + std::chrono::seconds(2);
+    while (!guest.finished())
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        const Clock::time_point now = Clock::now();
+        const double elapsed = std::chrono::duration<double>(now - begin).count();
+        if (now >= nextReport)
+        {
+            log::info("[{:.0f}s] guest PC 0x{:08X}", elapsed, guest.pc());
+            nextReport += std::chrono::seconds(2);
+        }
+        if (options.seconds > 0 && elapsed >= options.seconds)
+        {
+            log::info("Stopping the game after {} s (--seconds)", options.seconds);
+            break;
+        }
+    }
+    if (guest.finished())
+        log::info("The game thread returned at guest PC 0x{:08X}", guest.pc());
+    guest.stop();
+#else
+    log::info("Built without the recompiled game code: nothing to run");
+#endif
+    return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
 {
     const Options options = parseArgs(argc, argv);
+    g_headless = options.headless;
     log::info("TheGetawayRecomp: {} {} ({})", game::kTitle, game::kSerial, game::kRegion);
 #ifdef TGR_WITH_RECOMPILED_CODE
     const game::RecompiledCodeInfo recompiled = game::recompiledCodeInfo();
     log::info("Recompiled code: {} entry points, guest PC 0x{:08X}-0x{:08X}", recompiled.entryCount,
               recompiled.tableBase, recompiled.tableEnd);
 #endif
+
+    const fs::path dataPath = options.dataPath ? *options.dataPath : defaultDataPath();
+    if (options.headless)
+        return runHeadless(options, dataPath);
 
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     {
@@ -234,7 +312,6 @@ int main(int argc, char** argv)
     }
 
     // --- The player's own disc, extracted once ----------------------------------
-    const fs::path dataPath = options.dataPath ? *options.dataPath : defaultDataPath();
     if (!ensureGameData(window, options, dataPath))
     {
         SDL_DestroyWindow(window);
@@ -252,6 +329,19 @@ int main(int argc, char** argv)
         SDL_Quit();
         return 1;
     }
+
+    // --- The game ------------------------------------------------------------------
+#ifdef TGR_WITH_RECOMPILED_CODE
+    game::Guest guest;
+    if (!startGuest(window, guest, dataPath))
+    {
+        renderer.shutdown();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    bool guestReported = false;
+#endif
 
     bool running = true;
     while (running)
@@ -272,6 +362,15 @@ int main(int argc, char** argv)
             }
         }
 
+#ifdef TGR_WITH_RECOMPILED_CODE
+        // The window stays open after the game thread stops, so the log can be read.
+        if (!guestReported && guest.finished())
+        {
+            log::info("The game thread returned at guest PC 0x{:08X}", guest.pc());
+            guestReported = true;
+        }
+#endif
+
         if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
         {
             SDL_Delay(16);
@@ -282,6 +381,9 @@ int main(int argc, char** argv)
         renderer.drawFrame(0.05f, 0.05f, 0.08f);
     }
 
+#ifdef TGR_WITH_RECOMPILED_CODE
+    guest.stop();
+#endif
     renderer.shutdown();
     SDL_DestroyWindow(window);
     SDL_Quit();
