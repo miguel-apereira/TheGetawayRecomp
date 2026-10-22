@@ -19,6 +19,7 @@
 #ifdef TGR_WITH_RECOMPILED_CODE
 #include "game/RecompiledCode.h"
 #endif
+#include "host/PadInput.h"
 #include "host/VulkanRenderer.h"
 
 #include <SDL3/SDL.h>
@@ -60,6 +61,7 @@ struct Options
     std::vector<std::uint32_t> watch; // --watch <address>: log this EE word with the guest PC (repeatable)
     std::optional<fs::path> dumpFrames; // --dump-frames <dir>: save the displayed picture with each log line
     bool threads = false;              // --threads: log every EE thread with each log line
+    std::vector<std::string> presses;  // --press BUTTON@SECONDS: scripted pad press (repeatable)
 };
 
 // Set from --headless: errors go to the log only, never to a message box.
@@ -83,6 +85,8 @@ Options parseArgs(int argc, char** argv)
             options.headless = true;
         else if (arg == "--seconds" && i + 1 < argc)
             options.seconds = std::atof(argv[++i]);
+        else if (arg == "--press" && i + 1 < argc)
+            options.presses.emplace_back(argv[++i]);
         else if (arg == "--threads")
             options.threads = true;
         else if (arg == "--dump-frames" && i + 1 < argc)
@@ -291,7 +295,16 @@ int runHeadless(const Options& options, const fs::path& dataPath)
         return 1;
 
 #ifdef TGR_WITH_RECOMPILED_CODE
+    host::PadInput pad;
+    for (const std::string& press : options.presses)
+    {
+        if (!pad.addScriptedPress(press))
+            log::warn("Ignoring --press {}: expected BUTTON@SECONDS, such as START@20", press);
+    }
     game::Guest guest;
+    guest.setPadReader([&pad](int port, std::uint8_t* data, std::size_t size) {
+        return port == 0 && pad.read(data, size);
+    });
     if (!startGuest(nullptr, guest, dataPath))
         return 1;
 
@@ -303,6 +316,7 @@ int runHeadless(const Options& options, const fs::path& dataPath)
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         const Clock::time_point now = Clock::now();
         const double elapsed = std::chrono::duration<double>(now - begin).count();
+        pad.updateScript(elapsed);
         if (now >= nextReport)
         {
             std::string watched;
@@ -390,7 +404,11 @@ int main(int argc, char** argv)
 
     // --- The game ------------------------------------------------------------------
 #ifdef TGR_WITH_RECOMPILED_CODE
+    host::PadInput pad;
     game::Guest guest;
+    guest.setPadReader([&pad](int port, std::uint8_t* data, std::size_t size) {
+        return port == 0 && pad.read(data, size);
+    });
     if (!startGuest(window, guest, dataPath))
     {
         renderer.shutdown();
@@ -399,6 +417,9 @@ int main(int argc, char** argv)
         return 1;
     }
     bool guestReported = false;
+    std::vector<std::uint8_t> picture;
+    std::uint32_t pictureWidth = 0;
+    std::uint32_t pictureHeight = 0;
 #endif
 
     bool running = true;
@@ -418,7 +439,13 @@ int main(int argc, char** argv)
             default:
                 break;
             }
+#ifdef TGR_WITH_RECOMPILED_CODE
+            pad.handleEvent(event);
+#endif
         }
+#ifdef TGR_WITH_RECOMPILED_CODE
+        pad.update();
+#endif
 
 #ifdef TGR_WITH_RECOMPILED_CODE
         // The window stays open after the game thread stops, so the log can be read.
@@ -435,8 +462,15 @@ int main(int argc, char** argv)
             continue;
         }
 
-        // Placeholder frame until the GS replacement draws real output.
-        renderer.drawFrame(0.05f, 0.05f, 0.08f);
+#ifdef TGR_WITH_RECOMPILED_CODE
+        // The GS display, read back, until the native GS draws straight to Vulkan.
+        if (guest.captureFrame(picture, pictureWidth, pictureHeight))
+            renderer.drawFrame(picture.data(), pictureWidth, pictureHeight);
+        else
+            renderer.drawFrame();
+#else
+        renderer.drawFrame();
+#endif
     }
 
 #ifdef TGR_WITH_RECOMPILED_CODE

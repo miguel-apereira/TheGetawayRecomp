@@ -16,6 +16,7 @@ tgr_set_project_options(tgr_core)
 # The game executable.
 add_executable(TheGetawayRecomp
     main.cpp
+    host/PadInput.cpp
     host/VulkanRenderer.cpp
 )
 target_link_libraries(TheGetawayRecomp PRIVATE tgr_core SDL3::SDL3-static volk)

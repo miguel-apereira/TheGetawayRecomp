@@ -27,7 +27,9 @@ RecompiledCodeInfo recompiledCodeInfo()
     return info;
 }
 
-Guest::Guest() = default;
+Guest::Guest() : runtime_(std::make_unique<PS2Runtime>())
+{
+}
 
 Guest::~Guest()
 {
@@ -36,7 +38,6 @@ Guest::~Guest()
 
 bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
 {
-    runtime_ = std::make_unique<PS2Runtime>();
     if (!runtime_->initializeCore())
     {
         error = "The PS2 runtime failed to initialise";
@@ -109,6 +110,14 @@ std::string Guest::threadStates() const
             text += std::format("  sema {} count {} waiters {}\n", sema.id, sema.count, sema.waiters);
     }
     return text;
+}
+
+void Guest::setPadReader(PadReader reader)
+{
+    runtime_->padBackend().setHostReader(
+        [reader = std::move(reader)](int port, int, std::uint8_t* data, std::size_t size) {
+            return reader(port, data, size);
+        });
 }
 
 bool Guest::captureFrame(std::vector<std::uint8_t>& rgba, std::uint32_t& width, std::uint32_t& height)

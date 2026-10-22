@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,6 +60,11 @@ public:
 
     // A 32-bit word of EE memory, for progress logs (no synchronisation).
     std::uint32_t peek(std::uint32_t address) const;
+
+    // Fills a 32-byte DualShock 2 report for a pad port; false when no pad
+    // is plugged into it. Called on the guest thread.
+    using PadReader = std::function<bool(int port, std::uint8_t* data, std::size_t size)>;
+    void setPadReader(PadReader reader);
 
     // The picture the GS is displaying, as RGBA8 rows. False before the game
     // has set up a display.
