@@ -1,0 +1,20 @@
+# Hand-maintained additions to the ps2_recomp config for SCUS-97133.
+#
+# tools/scripts/analyze-ghidra.ps1 appends this file to the TOML that the
+# Ghidra exporter generates, so these entries survive a re-export. Only add
+# top-level tables here ([[jump_tables.table]], [patches], [mmio]); settings
+# under [general] are set by the script itself.
+
+# Switch in FUN_002595a8 whose index is sign-extended with dsll32/dsra32
+# before the table lookup, which ps2_recomp's pattern match does not follow.
+# Six cases (sltiu 6 at 0x259c90), dispatched by jr $a0 at 0x259cb8.
+[[jump_tables.table]]
+address = "0x003D05A0"
+entries = [
+  { index = 0, target = "0x00259CC0" },
+  { index = 1, target = "0x00259D88" },
+  { index = 2, target = "0x00259E3C" },
+  { index = 3, target = "0x0025A05C" },
+  { index = 4, target = "0x00259EF4" },
+  { index = 5, target = "0x00259FAC" },
+]
