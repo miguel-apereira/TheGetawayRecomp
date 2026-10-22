@@ -36,14 +36,31 @@ starting point for the disc inventory.
 
 1. Install Ghidra and the
    [ghidra-emotionengine-reloaded](https://github.com/chaoticgd/ghidra-emotionengine-reloaded)
-   extension.
-2. Create the Ghidra project under `recomp/ghidra/` (git-ignored) and import
-   `iso/extracted/SCUS_971.33`.
-3. Run auto-analysis, then
-   `external/PS2Recomp/ps2xRecomp/tools/ghidra/ExportPS2Functions.java`.
-4. Save the exported TOML and CSV over `recomp/config/SCUS-97133.toml` and
-   `recomp/config/SCUS-97133.functions.csv`, keeping the paths in `[general]`
-   as they are in the template.
+   extension. Releases ship a zip per Ghidra version; take the one whose
+   name matches yours exactly (for 12.1.4,
+   `ghidra_12.1.4_PUBLIC_..._ghidra-emotionengine-reloaded.zip`) and unzip it
+   into `%APPDATA%\ghidra\ghidra_<version>_PUBLIC\Extensions`.
+2. Run
+
+   ```powershell
+   tools\scripts\analyze-ghidra.ps1 -GhidraDir C:\path\to\ghidra_12.1.4_PUBLIC
+   ```
+
+   It imports `iso/extracted/SCUS_971.33` into a headless project under
+   `recomp/ghidra/` (git-ignored) with the `r5900:LE:32:default` language,
+   runs auto-analysis (a few minutes), then runs
+   `external/PS2Recomp/ps2xRecomp/tools/ghidra/ExportPS2Functions.java` and
+   writes `recomp/config/SCUS-97133.toml` and
+   `recomp/config/SCUS-97133.functions.csv` with repo-relative paths.
+3. When the project already exists the script only re-exports, so renames
+   and fixes made in the Ghidra GUI carry into the config. `-Reanalyze`
+   throws the project away and starts again.
+
+The ELF is stripped, so almost every function is `FUN_<address>`. The
+exporter recognises the EE kernel syscall wrappers (`CreateThread`,
+`sceSifSetDma`, ...) and lists them as `stubs`. `.vutext` and the
+`.DVP.overlay.*` sections are VU microcode, not EE code, and are not in the
+function map.
 
 Function maps, stub lists and patch addresses are our own analysis work and
 are committed. The disassembly and the Ghidra database are not.
