@@ -32,6 +32,20 @@ Runs `tgr-disc info` (prints the boot ELF's CRC32) and then
 it. `tgr-disc ls <iso>` lists every file with its sector (LBA), which is the
 starting point for the disc inventory.
 
+Almost all game data is in two archives, `PACK_EE.PAK` and `PACK_IOP.PAK`
+(format in [`src/disc/PakArchive.h`](../src/disc/PakArchive.h)). They hold
+data only: no ELF, IRX module or code overlay. The VU microcode is in the
+boot ELF's `.vutext` and `.DVP.overlay` sections.
+
+```powershell
+builds\msvc-debug\bin\tgr-disc.exe pak-ls      "iso\The Getaway.iso"           # every file, sector, size
+builds\msvc-debug\bin\tgr-disc.exe pak-verify  "iso\The Getaway.iso"           # decompress + checksum all
+builds\msvc-debug\bin\tgr-disc.exe pak-extract "iso\The Getaway.iso" iso\pak   # about 4.9 GB
+```
+
+Add `ee` or `iop` to work on one archive, or pass a `.pak` file instead of
+the ISO.
+
 ## 2. Analyse in Ghidra
 
 1. Install Ghidra and the

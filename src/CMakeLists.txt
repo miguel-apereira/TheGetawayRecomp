@@ -7,6 +7,7 @@ add_library(tgr_core STATIC
     disc/GameData.cpp
     disc/GameDisc.cpp
     disc/IsoImage.cpp
+    disc/PakArchive.cpp
     disc/SystemCnf.cpp
 )
 target_include_directories(tgr_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")

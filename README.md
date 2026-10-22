@@ -72,7 +72,7 @@ generated code) is described in [docs/PIPELINE.md](docs/PIPELINE.md).
 | Path | What it holds | In git |
 |---|---|---|
 | `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements, game overrides | yes |
-| `tools/disc/` | `tgr-disc`: inspect and extract your ISO | yes |
+| `tools/disc/` | `tgr-disc`: inspect and extract your ISO and its PAK archives | yes |
 | `tools/scripts/` | PowerShell scripts for the pipeline | yes |
 | `recomp/config/` | PS2Recomp config and function map for SCUS-97133 | yes |
 | `recomp/generated/` | C++ generated from your ELF | **no** |

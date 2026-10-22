@@ -6,14 +6,23 @@
 //   tgr-disc info    <image.iso>
 //   tgr-disc ls      <image.iso>
 //   tgr-disc extract <image.iso> <out-dir> [--all]
+//   tgr-disc pak-ls      <image.iso|file.pak> [ee|iop]
+//   tgr-disc pak-verify  <image.iso|file.pak> [ee|iop]
+//   tgr-disc pak-extract <image.iso|file.pak> <out-dir> [ee|iop]
 //
 // "extract" writes SYSTEM.CNF, the boot ELF, every IRX module and the IOPRP
 // image, which is all the recompilation pipeline needs. With --all it does the same full install
 // the game does on first run: every file plus disc_layout.tsv and install.txt.
+//
+// The pak-* commands open PACK_EE.PAK and PACK_IOP.PAK (see disc/PakArchive.h),
+// either inside the ISO or as files from an extracted disc. "pak-verify"
+// reads, decompresses and checksums every file without writing anything;
+// "pak-extract" writes them to <out-dir>/pack_ee/... and <out-dir>/pack_iop/...
 
 #include "disc/GameData.h"
 #include "disc/GameDisc.h"
 #include "disc/IsoImage.h"
+#include "disc/PakArchive.h"
 
 #include <algorithm>
 #include <atomic>
@@ -21,8 +30,10 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace tgr::disc;
@@ -35,7 +46,10 @@ int usage()
     std::fputs("usage:\n"
                "  tgr-disc info    <image.iso>\n"
                "  tgr-disc ls      <image.iso>\n"
-               "  tgr-disc extract <image.iso> <out-dir> [--all]\n",
+               "  tgr-disc extract <image.iso> <out-dir> [--all]\n"
+               "  tgr-disc pak-ls      <image.iso|file.pak> [ee|iop]\n"
+               "  tgr-disc pak-verify  <image.iso|file.pak> [ee|iop]\n"
+               "  tgr-disc pak-extract <image.iso|file.pak> <out-dir> [ee|iop]\n",
                stderr);
     return 2;
 }
@@ -139,6 +153,136 @@ int cmdExtract(const IsoImage& iso, const fs::path& outDir)
     return failed == 0 ? 0 : 1;
 }
 
+struct NamedPak
+{
+    std::string name; // "pack_ee"
+    std::unique_ptr<PakArchive> pak;
+};
+
+std::string toLower(std::string s)
+{
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return s;
+}
+
+// Opens the archives in an ISO (both, or only "ee"/"iop") or a single .pak file.
+bool openPaks(const fs::path& source, std::string_view which, std::vector<NamedPak>& out)
+{
+    std::string error;
+    if (endsWithNoCase(source.string(), ".pak"))
+    {
+        auto pak = PakArchive::openFile(source, error);
+        if (!pak)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", source.string().c_str(), error.c_str());
+            return false;
+        }
+        out.push_back({toLower(source.stem().string()), std::move(pak)});
+        return true;
+    }
+
+    // The readers below keep the ISO alive for as long as the archives.
+    std::shared_ptr<IsoImage> iso = IsoImage::open(source, error);
+    if (!iso)
+    {
+        std::fprintf(stderr, "error: %s\n", error.c_str());
+        return false;
+    }
+    for (const char* name : {"PACK_EE.PAK", "PACK_IOP.PAK"})
+    {
+        const std::string stem = toLower(fs::path(name).stem().string());
+        if (!which.empty() && stem != "pack_" + std::string(which))
+            continue;
+        const auto entry = iso->find(name);
+        if (!entry)
+        {
+            std::fprintf(stderr, "error: %s is not on this disc\n", name);
+            return false;
+        }
+        auto reader = [iso, lba = entry->lba](std::uint32_t sector, std::uint32_t count, void* buffer) {
+            return iso->readSectors(lba + sector, count, buffer);
+        };
+        auto pak = PakArchive::open(reader, entry->size, error);
+        if (!pak)
+        {
+            std::fprintf(stderr, "error: %s: %s\n", name, error.c_str());
+            return false;
+        }
+        out.push_back({stem, std::move(pak)});
+    }
+    if (out.empty())
+    {
+        std::fprintf(stderr, "error: unknown archive \"%.*s\" (use ee or iop)\n", static_cast<int>(which.size()),
+                     which.data());
+        return false;
+    }
+    return true;
+}
+
+int cmdPakList(const std::vector<NamedPak>& paks)
+{
+    for (const NamedPak& named : paks)
+    {
+        const PakArchive& pak = *named.pak;
+        std::printf("# %s: %s %s, built from %s, %zu files\n", named.name.c_str(), pak.magic().c_str(),
+                    pak.buildDate().c_str(), pak.sourceRoot().c_str(), pak.entries().size());
+        std::printf("%10s %12s %-4s %8s  %s\n", "SECTOR", "SIZE", "FLAG", "CHECKSUM", "PATH");
+        for (const PakEntry& entry : pak.entries())
+        {
+            char checksum[9] = "-";
+            if (entry.hasChecksum)
+                std::snprintf(checksum, sizeof(checksum), "%08X", entry.checksum);
+            std::printf("%10u %12u %-4s %8s  %s/%s\n", entry.sector, entry.storedSize, entry.compressed ? "z" : "",
+                        checksum, named.name.c_str(), entry.path.c_str());
+        }
+    }
+    return 0;
+}
+
+// Reads every file; writes them under outDir when it is not empty.
+int cmdPakRead(const std::vector<NamedPak>& paks, const fs::path& outDir)
+{
+    int failed = 0;
+    for (const NamedPak& named : paks)
+    {
+        std::uint64_t bytes = 0;
+        std::size_t compressed = 0;
+        for (const PakEntry& entry : named.pak->entries())
+        {
+            std::string error;
+            const auto data = named.pak->read(entry, error);
+            if (!data)
+            {
+                std::fprintf(stderr, "failed: %s/%s: %s\n", named.name.c_str(), entry.path.c_str(), error.c_str());
+                ++failed;
+                continue;
+            }
+            bytes += data->size();
+            compressed += entry.compressed ? 1 : 0;
+
+            if (outDir.empty())
+                continue;
+            const fs::path target = outDir / named.name / fs::path(entry.path);
+            std::error_code ec;
+            fs::create_directories(target.parent_path(), ec);
+            std::ofstream out(target, std::ios::binary | std::ios::trunc);
+            if (!out.write(reinterpret_cast<const char*>(data->data()), static_cast<std::streamsize>(data->size())))
+            {
+                std::fprintf(stderr, "failed: cannot write %s\n", target.string().c_str());
+                ++failed;
+            }
+        }
+        std::printf("%s: %zu files (%zu compressed), %llu bytes%s\n", named.name.c_str(),
+                    named.pak->entries().size(), compressed, static_cast<unsigned long long>(bytes),
+                    named.pak->hasChecksums() ? ", checksums verified" : ", no checksums in this archive");
+    }
+    if (!outDir.empty())
+        std::printf("written to %s\n", outDir.string().c_str());
+    if (failed != 0)
+        std::fprintf(stderr, "%d file(s) failed\n", failed);
+    return failed == 0 ? 0 : 1;
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -147,6 +291,22 @@ int main(int argc, char** argv)
         return usage();
 
     const std::string_view command = argv[1];
+    if (command.starts_with("pak-"))
+    {
+        const bool extract = command == "pak-extract";
+        if ((command != "pak-ls" && command != "pak-verify" && !extract) || (extract && argc < 4))
+            return usage();
+        const int whichArg = extract ? 4 : 3;
+        const std::string which = argc > whichArg ? toLower(argv[whichArg]) : std::string();
+
+        std::vector<NamedPak> paks;
+        if (!openPaks(fs::path(argv[2]), which, paks))
+            return 1;
+        if (command == "pak-ls")
+            return cmdPakList(paks);
+        return cmdPakRead(paks, extract ? fs::path(argv[3]) : fs::path());
+    }
+
     std::string error;
     const auto iso = IsoImage::open(fs::path(argv[2]), error);
     if (!iso)
