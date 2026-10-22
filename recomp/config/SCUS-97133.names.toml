@@ -1,0 +1,8 @@
+# Sony SDK functions that ps2_analyzer's SCE symbol database does not
+# recognise in SCUS-97133, identified by hand. tools/scripts/analyze-ghidra.ps1
+# applies these names with ApplySceNames.java after the database's, so the
+# runtime replaces them too. Format: "name@0xADDRESS".
+names = [
+  # Binds the CDVD DiskReady server 0x8000059A; prints "Libcdvd bind err CdDiskReady".
+  "sceCdDiskReady@0x0030F4E8",
+]

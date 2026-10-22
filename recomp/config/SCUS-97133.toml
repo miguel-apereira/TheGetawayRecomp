@@ -72,6 +72,7 @@ stubs = [
   "sceCdSync@0x0030EF88",
   "sceCdSyncS@0x0030F028",
   "sceCdInit@0x0030F208",
+  "sceCdDiskReady@0x0030F4E8",
   "sceCdMmode@0x0030F6E0",
   "sceMcInit@0x0030F7A8",
   "sceMcOpen@0x0030F968",
@@ -244,10 +245,10 @@ skip = []
 function_count = 8043
 code_label_count = 38835
 csv_record_count = 46878
-stub_count = 188
+stub_count = 189
 untracked_stub_count = 23
 skip_count = 0
-uncategorized_count = 7832
+uncategorized_count = 7831
 runtime_call_name_count = 656
 runtime_call_source = "embedded_ps2_call_list_snapshot"
 

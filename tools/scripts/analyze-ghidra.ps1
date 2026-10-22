@@ -6,7 +6,9 @@
 #
 #   ApplySceNames.java           names the Sony SDK and libc functions that
 #                                PS2Recomp's ps2_analyzer finds with its SCE
-#                                symbol database, so the runtime replaces them
+#                                symbol database, plus the ones identified by
+#                                hand in recomp\config\SCUS-97133.names.toml,
+#                                so the runtime replaces them
 #   CreatePointerFunctions.java  creates the functions only reachable through
 #                                pointers in data (vtables, callbacks)
 #   ExportPS2Functions.java      PS2Recomp's exporter
@@ -80,13 +82,22 @@ if (Test-Path (Join-Path $projectDir "$projectName.gpr")) {
 }
 $headless += @(
     '-scriptPath', "$ourScriptDir;$exporterDir",
-    '-postScript', 'ApplySceNames.java', $sceToml,
+    '-postScript', 'ApplySceNames.java', $sceToml, (Join-Path $RepoRoot 'recomp\config\SCUS-97133.names.toml'),
     '-postScript', 'CreatePointerFunctions.java',
     '-postScript', 'ExportPS2Functions.java', $exportToml, $configCsv,
     '-log', (Join-Path $exportDir 'headless.log'),
     '-scriptlog', (Join-Path $exportDir 'script.log')
 )
+$headlessLog = Join-Path $exportDir 'headless.log'
+$logStart = if (Test-Path $headlessLog) { (Get-Item $headlessLog).Length } else { 0 }
 Invoke-Native (Join-Path $GhidraDir 'support\analyzeHeadless.bat') $headless
+# analyzeHeadless exits 0 even when a script fails to compile or throws, and
+# the export would then quietly miss that script's work.
+$logBytes = [IO.File]::ReadAllBytes($headlessLog)
+$runLog = [Text.Encoding]::UTF8.GetString($logBytes, $logStart, $logBytes.Length - $logStart)
+if ($runLog -match 'SCRIPT ERROR') {
+    throw "A Ghidra script failed; see $headlessLog"
+}
 
 # The exporter writes absolute paths for this machine; point them back at the
 # repo-relative locations recompile.ps1 expects, and add our own settings.

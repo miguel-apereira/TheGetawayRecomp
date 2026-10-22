@@ -6,8 +6,9 @@
 // FUN_ names, nothing is replaced by the runtime's handlers, and the game's
 // own SIF, CD and pad libraries run against hardware that is not there.
 //
-// Argument: the TOML ps2_analyzer wrote. Every "name@0xADDRESS" string in it
-// is applied. Names given by hand in the Ghidra project are kept; a missing
+// Arguments: the TOML ps2_analyzer wrote, then any hand-made list of names
+// (recomp/config/SCUS-97133.names.toml). Every "name@0xADDRESS" string in
+// them is applied. Names given by hand in the Ghidra project are kept; a missing
 // function is created when the address is not inside another one.
 //
 // Run by tools/scripts/analyze-ghidra.ps1 before ExportPS2Functions.java.
@@ -31,14 +32,19 @@ public class ApplySceNames extends GhidraScript {
     protected void run() throws Exception {
         String[] args = getScriptArgs();
         if (args.length < 1) {
-            printerr("Usage: ApplySceNames.java <ps2_analyzer output toml>");
+            printerr("Usage: ApplySceNames.java <ps2_analyzer output toml> [more name lists]");
             return;
+        }
+
+        StringBuilder text = new StringBuilder();
+        for (String arg : args) {
+            text.append(Files.readString(Path.of(arg))).append(System.lineSeparator());
         }
 
         int renamed = 0;
         int created = 0;
         int kept = 0;
-        Matcher matcher = ENTRY.matcher(Files.readString(Path.of(args[0])));
+        Matcher matcher = ENTRY.matcher(text);
         while (matcher.find() && !monitor.isCancelled()) {
             String name = matcher.group(1);
             if (name.startsWith("sub_")) {
