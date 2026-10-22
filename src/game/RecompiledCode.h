@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 class PS2Runtime;
 
@@ -13,6 +14,9 @@ class PS2Runtime;
 // linked in when TGR_WITH_RECOMPILED_CODE is on.
 namespace tgr::game
 {
+
+class Pfs;
+class Stream;
 
 struct RecompiledCodeInfo
 {
@@ -37,7 +41,8 @@ public:
     Guest& operator=(const Guest&) = delete;
 
     // Loads the boot ELF from the game data folder, which also becomes the
-    // guest's cdrom0: root, and starts the guest thread.
+    // guest's cdrom0: root, puts our native IOP modules in place of the
+    // game's, and starts the guest thread.
     bool start(const std::filesystem::path& gameDataDir, std::string& error);
 
     // True once the guest thread has returned or died.
@@ -46,11 +51,26 @@ public:
     // Last guest PC the runtime recorded, for progress logs.
     std::uint32_t pc() const;
 
+    // DMA, GIF, GS and VIF traffic so far, as one line for progress logs.
+    std::string hardwareStats() const;
+
+    // Every EE thread with its state, PC and what it waits on, one per line.
+    std::string threadStates() const;
+
+    // A 32-bit word of EE memory, for progress logs (no synchronisation).
+    std::uint32_t peek(std::uint32_t address) const;
+
+    // The picture the GS is displaying, as RGBA8 rows. False before the game
+    // has set up a display.
+    bool captureFrame(std::vector<std::uint8_t>& rgba, std::uint32_t& width, std::uint32_t& height);
+
     // Asks the guest to stop and waits for its thread.
     void stop();
 
 private:
     std::unique_ptr<PS2Runtime> runtime_;
+    std::unique_ptr<Pfs> pfs_;
+    std::unique_ptr<Stream> stream_;
     bool started_ = false;
 };
 

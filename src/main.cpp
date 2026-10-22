@@ -29,11 +29,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace fs = std::filesystem;
 using namespace tgr;
@@ -55,6 +57,9 @@ struct Options
     bool validation = false;          // --validation: Vulkan validation layer (Vulkan SDK, developers only)
     bool headless = false;            // --headless: no window, no dialogs; log only
     double seconds = 0;               // --seconds: stop the game after this long (0: run until it exits)
+    std::vector<std::uint32_t> watch; // --watch <address>: log this EE word with the guest PC (repeatable)
+    std::optional<fs::path> dumpFrames; // --dump-frames <dir>: save the displayed picture with each log line
+    bool threads = false;              // --threads: log every EE thread with each log line
 };
 
 // Set from --headless: errors go to the log only, never to a message box.
@@ -78,6 +83,12 @@ Options parseArgs(int argc, char** argv)
             options.headless = true;
         else if (arg == "--seconds" && i + 1 < argc)
             options.seconds = std::atof(argv[++i]);
+        else if (arg == "--threads")
+            options.threads = true;
+        else if (arg == "--dump-frames" && i + 1 < argc)
+            options.dumpFrames = pathFromUtf8(argv[++i]);
+        else if (arg == "--watch" && i + 1 < argc)
+            options.watch.push_back(static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
         else
             log::warn("Unknown argument: {}", arg);
     }
@@ -226,6 +237,38 @@ bool ensureGameData(SDL_Window* window, const Options& options, const fs::path& 
 }
 
 #ifdef TGR_WITH_RECOMPILED_CODE
+// Writes RGBA8 rows as a 32-bit BMP.
+bool writeBmp(const fs::path& path, const std::vector<std::uint8_t>& rgba, std::uint32_t width, std::uint32_t height)
+{
+    std::ofstream out(path, std::ios::binary);
+    if (!out)
+        return false;
+    const std::uint32_t imageBytes = width * height * 4;
+    const auto u16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
+    const auto u32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
+    out.write("BM", 2);
+    u32(14 + 40 + imageBytes);
+    u32(0);
+    u32(14 + 40);
+    u32(40);
+    u32(width);
+    u32(static_cast<std::uint32_t>(-static_cast<std::int32_t>(height))); // top-down rows
+    u16(1);
+    u16(32);
+    u32(0); // BI_RGB
+    u32(imageBytes);
+    u32(2835);
+    u32(2835);
+    u32(0);
+    u32(0);
+    std::vector<std::uint8_t> bgra(rgba.begin(), rgba.begin() + std::min<std::size_t>(rgba.size(), imageBytes));
+    for (std::size_t i = 0; i + 3 < bgra.size(); i += 4)
+        std::swap(bgra[i], bgra[i + 2]);
+    bgra.resize(imageBytes);
+    out.write(reinterpret_cast<const char*>(bgra.data()), static_cast<std::streamsize>(bgra.size()));
+    return static_cast<bool>(out);
+}
+
 // Starts the recompiled game on its own thread.
 bool startGuest(SDL_Window* window, game::Guest& guest, const fs::path& dataPath)
 {
@@ -262,8 +305,23 @@ int runHeadless(const Options& options, const fs::path& dataPath)
         const double elapsed = std::chrono::duration<double>(now - begin).count();
         if (now >= nextReport)
         {
-            log::info("[{:.0f}s] guest PC 0x{:08X}", elapsed, guest.pc());
+            std::string watched;
+            for (const std::uint32_t address : options.watch)
+                watched += std::format(" [{:08X}]={:08X}", address, guest.peek(address));
+            log::info("[{:.0f}s] guest PC 0x{:08X} {}{}", elapsed, guest.pc(), guest.hardwareStats(), watched);
+            if (options.threads)
+                log::info("EE threads:\n{}", guest.threadStates());
             nextReport += std::chrono::seconds(2);
+
+            std::vector<std::uint8_t> frame;
+            std::uint32_t width = 0;
+            std::uint32_t height = 0;
+            if (options.dumpFrames && guest.captureFrame(frame, width, height))
+            {
+                std::error_code ec;
+                fs::create_directories(*options.dumpFrames, ec);
+                writeBmp(*options.dumpFrames / std::format("frame_{:04.0f}s.bmp", elapsed), frame, width, height);
+            }
         }
         if (options.seconds > 0 && elapsed >= options.seconds)
         {

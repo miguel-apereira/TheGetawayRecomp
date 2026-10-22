@@ -2,8 +2,14 @@
 #include "game/RecompiledCode.h"
 
 #include "game/GameBuild.h"
+#include "game/Pfs.h"
+#include "game/Stream.h"
 
 #include "ps2_runtime.h"
+#include "runtime/ee_scheduler.h"
+
+#include <cstring>
+#include <format>
 
 namespace tgr::game
 {
@@ -44,6 +50,11 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
         return false;
     }
 
+    pfs_ = std::make_unique<Pfs>(gameDataDir);
+    pfs_->install(*runtime_);
+    stream_ = std::make_unique<Stream>();
+    stream_->install(*runtime_);
+
     runtime_->startGuest();
     started_ = true;
     return true;
@@ -57,6 +68,55 @@ bool Guest::finished() const
 std::uint32_t Guest::pc() const
 {
     return runtime_ ? runtime_->m_debugPc.load(std::memory_order_relaxed) : 0;
+}
+
+std::uint32_t Guest::peek(std::uint32_t address) const
+{
+    const std::uint32_t physical = address & 0x1FFFFFFC;
+    if (!runtime_ || physical >= PS2_RAM_SIZE)
+        return 0;
+    std::uint32_t value = 0;
+    std::memcpy(&value, runtime_->memory().getRDRAM() + physical, sizeof(value));
+    return value;
+}
+
+std::string Guest::hardwareStats() const
+{
+    if (!runtime_)
+        return {};
+    const PS2Memory& memory = runtime_->memory();
+    return std::format("dma={} gif={} gs={} vif={}", memory.dmaStartCount(), memory.gifCopyCount(),
+                       memory.gsWriteCount(), memory.vifWriteCount());
+}
+
+std::string Guest::threadStates() const
+{
+    if (!runtime_)
+        return {};
+    const EeKernelSnapshot snapshot = runtime_->eeScheduler().snapshot();
+    std::string text;
+    for (const EeThreadSnapshot& thread : snapshot.threads)
+    {
+        if (thread.id < 0)
+            continue; // dispatcher threads for interrupts and callbacks
+        text += std::format("  thread {} prio {} status {} wait {}:{} pc 0x{:08X} ra 0x{:08X} entry 0x{:08X}\n",
+                            thread.id, thread.currentPriority, static_cast<int>(thread.status),
+                            static_cast<int>(thread.waitReason), thread.waitId, thread.pc, thread.ra, thread.entry);
+    }
+    for (const EeSemaphoreSnapshot& sema : snapshot.semaphores)
+    {
+        if (sema.waiters)
+            text += std::format("  sema {} count {} waiters {}\n", sema.id, sema.count, sema.waiters);
+    }
+    return text;
+}
+
+bool Guest::captureFrame(std::vector<std::uint8_t>& rgba, std::uint32_t& width, std::uint32_t& height)
+{
+    if (!started_)
+        return false;
+    runtime_->gs().latchHostPresentationFrame();
+    return runtime_->gs().copyLatchedHostPresentationFrame(rgba, width, height) && width && height;
 }
 
 void Guest::stop()
