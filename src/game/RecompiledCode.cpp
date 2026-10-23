@@ -52,6 +52,13 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
         return false;
     }
 
+    // The game keeps its own malloc and sizes its main heap up to just below
+    // its stack (0x1FF4000), so it owns all RAM above its ELF. The runtime's own
+    // guest memory goes below the ELF instead, in 0x80000-0x100000, which the
+    // EE kernel leaves to programs and this game never uses: a small heap for
+    // SIF and GS packets, then stacks for interrupt handlers and callbacks.
+    runtime_->reserveRuntimeGuestMemory(0x00080000, 0x000A0000, 0x000A0000, 0x00100000);
+
     pfs_ = std::make_unique<Pfs>(gameDataDir);
     pfs_->install(*runtime_);
     stream_ = std::make_unique<Stream>(*pfs_);

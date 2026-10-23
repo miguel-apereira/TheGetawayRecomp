@@ -13,4 +13,14 @@ names = [
   "libipu_sceIpuSync@0x0030DD48",
   "libipu_sceIpuStopDMA@0x0030DB10",
   "libipu_sceIpuRestartDMA@0x0030DBF8",
+
+  # newlib's malloc family runs as the game's own code, on its own sbrk. The
+  # runtime's replacements allocate from a separate heap, which overlapped the
+  # one the game builds with sbrk over the rest of RAM.
+  "newlib_malloc_extend_top@0x00310E80",
+  "newlib_malloc_r@0x003110D8",
+  "newlib_free_r@0x00319048",
+  "newlib_malloc_trim_r@0x00319368",
+  "newlib_calloc_r@0x0031B4E8",
+  "newlib_realloc_r@0x0031B608",
 ]

@@ -87,8 +87,6 @@ stubs = [
   "sceMcDelete@0x003105F0",
   "exit@0x00310AC0",
   "fflush@0x00310B70",
-  "malloc_extend_top@0x00310E80",
-  "malloc_r@0x003110D8",
   "memcmp@0x00311850",
   "memcpy@0x003118E4",
   "memmove@0x00311994",
@@ -106,12 +104,8 @@ stubs = [
   "strrchr@0x00313318",
   "strstr@0x00313368",
   "fread@0x00318F28",
-  "free_r@0x00319048",
-  "malloc_trim_r@0x00319368",
   "mbtowc_r@0x00319AA8",
   "memchr@0x00319AE4",
-  "calloc_r@0x0031B4E8",
-  "realloc_r@0x0031B608",
   "fclose@0x0032E148",
   "fseek@0x0032E2A8",
   "fwrite@0x0032E738",
@@ -241,10 +235,10 @@ skip = []
 function_count = 8043
 code_label_count = 38835
 csv_record_count = 46878
-stub_count = 185
+stub_count = 179
 untracked_stub_count = 23
 skip_count = 0
-uncategorized_count = 7835
+uncategorized_count = 7841
 runtime_call_name_count = 656
 runtime_call_source = "embedded_ps2_call_list_snapshot"
 
