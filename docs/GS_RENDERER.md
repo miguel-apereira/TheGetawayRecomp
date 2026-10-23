@@ -1,8 +1,8 @@
 # Native GS renderer: design
 
-Status: **proposal for review** (2026-10-23). Nothing here is built yet. The
-[open questions](#13-open-questions) at the end need Miguel's answers before
-the matching parts are implemented.
+Status: **design agreed** (2026-10-23). Nothing here is built yet. Miguel's
+answers to the open questions are recorded in [Decisions](#13-decisions).
+The work starts in its own thread once the New Game hang is fixed.
 
 ## 1. Summary
 
@@ -293,7 +293,8 @@ bounded because we target one game and can measure every case it uses.
   to the swapchain with the right aspect ratio, letterboxed.
 - **Anti-blur:** many games show the same frame on both circuits one line
   apart to soften interlace flicker. Detect it and show one circuit at full
-  quality (on by default, an option to keep the original look).
+  quality. On by default; a player setting, exposed later in the launcher or
+  an options menu.
 - **Interlace/field mode:** if the game renders fields, use a simple
   bob/weave choice first; better deinterlacing later.
 - Presentation mode FIFO (vsync) by default. The game keeps its own timing
@@ -308,15 +309,16 @@ bounded because we target one game and can measure every case it uses.
   semaphores, descriptor indexing core), plus `dualSrcBlend`. Optional:
   `VK_EXT_attachment_feedback_loop_layout`,
   `VK_EXT_rasterization_order_attachment_access`,
-  `VK_EXT_extended_dynamic_state3`. (Question Q3.)
+  `VK_EXT_extended_dynamic_state3`. (Decided: Vulkan 1.3.)
 - **Memory:** a few large allocations: per-frame host-visible rings
   (vertices, draw entries, uploads; device-local host-visible when Resizable
   BAR exists), a pool for target images and one for texture-cache images,
   sub-allocated by our own small allocator. No allocation per draw.
 - **Frames in flight:** 2, with a timeline semaphore per submission so the
   CPU knows when ring space is free.
-- **Shaders:** GLSL compiled to SPIR-V at build time and embedded in the exe.
-  (Question Q4 on the compiler.)
+- **Shaders:** GLSL compiled to SPIR-V at build time by glslang, built from
+  a submodule as part of our build (no Vulkan SDK needed), and embedded in
+  the exe.
 - **Debugging:** debug labels per GS draw batch, GPU timestamps per frame
   section, validation with `--validation` as today.
 - Platform code stays in `src/host` (window, swapchain, surface). The GS
@@ -325,13 +327,14 @@ bounded because we target one game and can measure every case it uses.
 
 ## 7. Performance plan
 
-Targets (to confirm against Miguel's hardware, Q8):
+Reference machine: Miguel's main PC, Ryzen 5 5600X and Radeon RX 6700 XT.
+Targets on it:
 
 | Budget per game frame | Target |
 |---|---|
 | Game thread time spent on the GS (copy into the ring) | < 0.5 ms |
 | GS thread (parse, batch, record) | < 4 ms, so 60 FPS stays possible |
-| GPU at 1080p-4K on a mid-range GPU | < 4 ms |
+| GPU at 1440p (and headroom for 4K) | < 4 ms |
 | Vulkan draws per frame | tens to a few hundred, not thousands |
 | Pipeline compiles during play | 0 after the first run |
 
@@ -352,6 +355,8 @@ follow soon after the renderer starts.
 In order, after the 1x renderer is correct:
 
 1. **Internal resolution:** 1x, 2x, 3x, 4x or "match window", per axis.
+   Default: match window. It's a player setting from the start, exposed
+   later in the launcher or an options menu.
 2. **Upscaling fixes:** the half-pixel correction (`halfPixelOffset: 2`),
    rounding of sprite coordinates for 1:1 screen copies, and keeping post-
    processing chains aligned. Passes that only work at 1x can be kept at 1x.
@@ -392,9 +397,9 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
   Miguel's main PC at the same moments, for scenes where the CPU backend is
   wrong.
 - **Performance.** The same dumps timed in Release with GPU timestamps.
-- Running tests needs a Vulkan device. The VM has no usable Vulkan window,
-  so GPU tests run on Miguel's main PC, or on a software Vulkan driver if the
-  VM has none (Q9).
+- Running tests needs a Vulkan device. Images and timings come from Miguel's
+  main PC. A software Vulkan driver on the VM for headless replay tests is
+  tried only if it's easy.
 
 ## 11. Licensing and references
 
@@ -402,9 +407,12 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
   copying from it would also conflict with the MIT headers.
 - References used for behaviour: public GS documentation (register layouts,
   formats, swizzling), PS2Recomp's sources (GPL-3.0, already linked: we can
-  call its swizzle tables but not copy them into MIT files), PCSX2 only as a
+  call its swizzle tables but not copy them into MIT files), PCSX2 as a
   running program to compare against, and the design write-ups listed in
   section 4.
+- PCSX2's and the GPL ports' renderer source may be read to understand
+  behaviour (Miguel, 2026-10-23). Our code is written by us; nothing is
+  copied.
 
 ## 12. Milestones
 
@@ -418,42 +426,25 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
 | R5 | **Quality.** Upscaling and its fixes, anti-blur, output scaling | Clean 2x-4x image in the measured scenes |
 | later | Widescreen, 60 FPS (game patches) | After the port is playable |
 
-R0 can start now. R1 and later wait for the New Game hang to be fixed, as
-planned, so the work is tested on real 3D scenes.
+All of it, R0 included, starts after the New Game hang is fixed, in a new
+thread dedicated to the renderer, so the VM serves one thread at a time and
+the work is tested on real 3D scenes. Ahead-of-time compiled VU1 follows R2.
 
-## 13. Open questions
+## 13. Decisions
 
-Recommendations are in bold; nothing here is decided until Miguel answers.
+Miguel answered the open questions on 2026-10-23.
 
-1. **Approach.** Render-target renderer (A), VRAM-on-GPU (B), or A with B as a
-   fallback for odd cases? **A only; reconsider if the inventory shows many
-   framebuffer tricks.**
-2. **Where to hook.** Our own GS frontend through a small hook in the fork, or
-   implement PS2Recomp's `GSRasterBackend` interface and keep its frontend?
-   **Own frontend**: the per-primitive interface is part of the slowness.
-3. **Minimum Vulkan version.** 1.3 (most GPUs from 2016 on with current
-   drivers) or 1.2 as the README says now? **1.3.**
-4. **Shader compiler.** Build glslang from a submodule as part of our build,
-   commit precompiled SPIR-V, or require the Vulkan SDK to build? **glslang
-   submodule** (no SDK on the VM, reproducible builds).
-5. **GS thread from the start, or single-threaded first?** **Thread in R1**,
-   once the frontend matches the CPU backend single-threaded.
-6. **Default internal resolution** once upscaling works: 1x, 2x, 3x, or match
-   window? **Match window**, with 1x always available.
-7. **Anti-blur default** on or off? **On**, with an option for the original
-   look.
-8. **Your main PC's GPU and CPU**, to set the performance targets and the
-   minimum spec.
-9. **Where GPU tests run.** Your main PC only, or should we also try a
-   software Vulkan driver on the VM for headless replay tests? **Main PC for
-   images and timings; software Vulkan on the VM only if it's easy.**
-10. **Reading references.** May we read PCSX2's and the GPL ports' renderer
-    source to understand behaviour (writing our own code, never copying), or
-    should we work from documentation and tests only? **Read for
-    understanding, never copy.**
-11. **VU1.** Plan ahead-of-time compiled VU1 as the next item after R2, so
-    in-game speed isn't capped by the VU1 interpreter? **Yes.**
-12. **R0 now?** Start the inventory and GS dump tool now, while the New Game
-    hang is being fixed? It only adds counters and a recorder; it would need
-    the VM after the hang thread is done, or a separate worktree. **Yes, after
-    the hang fix, to keep the VM to one thread.**
+| # | Question | Decision |
+|---|---|---|
+| 1 | Approach | Render-target renderer (A) only. Reconsider only if the inventory shows many framebuffer tricks |
+| 2 | Where to hook | Our own GS frontend through a small `GsHost` hook in the fork |
+| 3 | Minimum Vulkan | 1.3 (the README's requirement changes when the renderer lands) |
+| 4 | Shader compiler | glslang built from a submodule |
+| 5 | GS thread | Added in R1, once our frontend matches the CPU backend single-threaded |
+| 6 | Default internal resolution | Match window. Must be a player setting, later in the launcher or an options menu |
+| 7 | Anti-blur | On by default. Must be a player setting too |
+| 8 | Reference hardware | Ryzen 5 5600X, Radeon RX 6700 XT |
+| 9 | Where GPU tests run | Miguel's main PC for images and timings; software Vulkan on the VM only if easy |
+| 10 | Reading references | Read PCSX2 and the GPL ports' source for understanding; never copy |
+| 11 | VU1 | Ahead-of-time compiled VU1 is the next item after R2 |
+| 12 | When to start | After the New Game hang fix, in a new thread dedicated to the renderer |
