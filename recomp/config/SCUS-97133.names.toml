@@ -1,0 +1,16 @@
+# Function names given by hand, applied by ApplySceNames.java after (and over)
+# the ones from ps2_analyzer's SCE symbol database. A runtime-known name makes
+# the runtime replace the function; any other name keeps the game's own code.
+# Format: "name@0xADDRESS".
+names = [
+  # Binds the CDVD DiskReady server 0x8000059A; prints "Libcdvd bind err CdDiskReady".
+  "sceCdDiskReady@0x0030F4E8",
+
+  # libipu talks to the IPU, which we implement natively (src/hw/Ipu.cpp), so
+  # the game's own copies run instead of the runtime's stubs. sceIpuInit loads
+  # the quantiser matrices, VQ palette and thresholds the movies need.
+  "libipu_sceIpuInit@0x0030DE18",
+  "libipu_sceIpuSync@0x0030DD48",
+  "libipu_sceIpuStopDMA@0x0030DB10",
+  "libipu_sceIpuRestartDMA@0x0030DBF8",
+]

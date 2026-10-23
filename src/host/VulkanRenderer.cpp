@@ -93,8 +93,7 @@ bool VulkanRenderer::createInstance(bool enableValidation)
         if (hasLayer(kValidationLayer))
             layers.push_back(kValidationLayer);
         else
-            log::warn("Vulkan validation requested but {} is not installed (install the Vulkan SDK)",
-                      kValidationLayer);
+            log::warn("--validation needs {} from the Vulkan SDK; running without it", kValidationLayer);
     }
 
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
@@ -318,7 +317,93 @@ void VulkanRenderer::destroySwapchain()
     }
 }
 
-void VulkanRenderer::drawFrame(float r, float g, float b)
+std::uint32_t VulkanRenderer::findMemoryType(std::uint32_t typeBits, VkMemoryPropertyFlags properties) const
+{
+    VkPhysicalDeviceMemoryProperties memory;
+    vkGetPhysicalDeviceMemoryProperties(gpu_, &memory);
+    for (std::uint32_t i = 0; i < memory.memoryTypeCount; ++i)
+    {
+        if ((typeBits & (1u << i)) && (memory.memoryTypes[i].propertyFlags & properties) == properties)
+            return i;
+    }
+    return UINT32_MAX;
+}
+
+// (Re)creates the picture image and the staging buffers for a picture size.
+bool VulkanRenderer::preparePicture(std::uint32_t width, std::uint32_t height)
+{
+    if (pictureImage_ && width == pictureWidth_ && height == pictureHeight_)
+        return true;
+    vkDeviceWaitIdle(device_);
+    destroyPicture();
+
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.imageType = VK_IMAGE_TYPE_2D;
+    image.format = VK_FORMAT_R8G8B8A8_UNORM;
+    image.extent = {width, height, 1};
+    image.mipLevels = 1;
+    image.arrayLayers = 1;
+    image.samples = VK_SAMPLE_COUNT_1_BIT;
+    image.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!check(vkCreateImage(device_, &image, nullptr, &pictureImage_), "vkCreateImage"))
+        return false;
+    VkMemoryRequirements imageNeeds;
+    vkGetImageMemoryRequirements(device_, pictureImage_, &imageNeeds);
+    VkMemoryAllocateInfo imageAlloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    imageAlloc.allocationSize = imageNeeds.size;
+    imageAlloc.memoryTypeIndex = findMemoryType(imageNeeds.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (!check(vkAllocateMemory(device_, &imageAlloc, nullptr, &pictureMemory_), "vkAllocateMemory") ||
+        !check(vkBindImageMemory(device_, pictureImage_, pictureMemory_, 0), "vkBindImageMemory"))
+        return false;
+
+    for (Frame& frame : frames_)
+    {
+        VkBufferCreateInfo buffer{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        buffer.size = VkDeviceSize{width} * height * 4;
+        buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        buffer.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (!check(vkCreateBuffer(device_, &buffer, nullptr, &frame.staging), "vkCreateBuffer"))
+            return false;
+        VkMemoryRequirements needs;
+        vkGetBufferMemoryRequirements(device_, frame.staging, &needs);
+        VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        alloc.allocationSize = needs.size;
+        alloc.memoryTypeIndex = findMemoryType(
+            needs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        if (!check(vkAllocateMemory(device_, &alloc, nullptr, &frame.stagingMemory), "vkAllocateMemory") ||
+            !check(vkBindBufferMemory(device_, frame.staging, frame.stagingMemory, 0), "vkBindBufferMemory") ||
+            !check(vkMapMemory(device_, frame.stagingMemory, 0, VK_WHOLE_SIZE, 0, &frame.stagingData), "vkMapMemory"))
+            return false;
+    }
+    pictureWidth_ = width;
+    pictureHeight_ = height;
+    return true;
+}
+
+void VulkanRenderer::destroyPicture()
+{
+    for (Frame& frame : frames_)
+    {
+        if (frame.stagingMemory)
+            vkFreeMemory(device_, frame.stagingMemory, nullptr); // also unmaps it
+        if (frame.staging)
+            vkDestroyBuffer(device_, frame.staging, nullptr);
+        frame.staging = VK_NULL_HANDLE;
+        frame.stagingMemory = VK_NULL_HANDLE;
+        frame.stagingData = nullptr;
+    }
+    if (pictureImage_)
+        vkDestroyImage(device_, pictureImage_, nullptr);
+    if (pictureMemory_)
+        vkFreeMemory(device_, pictureMemory_, nullptr);
+    pictureImage_ = VK_NULL_HANDLE;
+    pictureMemory_ = VK_NULL_HANDLE;
+    pictureWidth_ = pictureHeight_ = 0;
+}
+
+void VulkanRenderer::drawFrame(const std::uint8_t* rgba, std::uint32_t width, std::uint32_t height)
 {
     if (!device_)
         return;
@@ -330,8 +415,12 @@ void VulkanRenderer::drawFrame(float r, float g, float b)
             return;
     }
 
+    const bool hasPicture = rgba && width && height && preparePicture(width, height);
+
     Frame& frame = frames_[frameIndex_];
     vkWaitForFences(device_, 1, &frame.inFlight, VK_TRUE, UINT64_MAX);
+    if (hasPicture)
+        std::memcpy(frame.stagingData, rgba, std::size_t{width} * height * 4);
 
     std::uint32_t imageIndex = 0;
     VkResult acquired =
@@ -357,9 +446,49 @@ void VulkanRenderer::drawFrame(float r, float g, float b)
     VkImage image = swapchainImages_[imageIndex];
     transition(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    const VkClearColorValue color{{r, g, b, 1.0f}};
+    const VkClearColorValue black{{0.0f, 0.0f, 0.0f, 1.0f}};
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+    vkCmdClearColorImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
+
+    if (hasPicture)
+    {
+        // Staging buffer -> picture image -> scaled blit into the swapchain image.
+        // The first barrier also waits for the previous frame's blit to finish
+        // reading the picture image.
+        transition(cmd, pictureImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageExtent = {width, height, 1};
+        vkCmdCopyBufferToImage(cmd, frame.staging, pictureImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        transition(cmd, pictureImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+
+        // The PS2 picture fills a 4:3 TV whatever its size in pixels.
+        const float windowW = static_cast<float>(swapchainExtent_.width);
+        const float windowH = static_cast<float>(swapchainExtent_.height);
+        const float scale = std::min(windowW / 4.0f, windowH / 3.0f);
+        const auto targetW = static_cast<std::int32_t>(4.0f * scale);
+        const auto targetH = static_cast<std::int32_t>(3.0f * scale);
+        const std::int32_t left = (static_cast<std::int32_t>(windowW) - targetW) / 2;
+        const std::int32_t top = (static_cast<std::int32_t>(windowH) - targetH) / 2;
+
+        VkImageBlit blit{};
+        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.srcOffsets[1] = {static_cast<std::int32_t>(width), static_cast<std::int32_t>(height), 1};
+        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        blit.dstOffsets[0] = {left, top, 0};
+        blit.dstOffsets[1] = {left + targetW, top + targetH, 1};
+        // The clear above and the blit both write the swapchain image.
+        transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+        vkCmdBlitImage(cmd, pictureImage_, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    }
+
     transition(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
     vkEndCommandBuffer(cmd);
@@ -394,6 +523,7 @@ void VulkanRenderer::shutdown()
     if (device_)
     {
         vkDeviceWaitIdle(device_);
+        destroyPicture();
         destroySwapchain();
         for (Frame& frame : frames_)
         {

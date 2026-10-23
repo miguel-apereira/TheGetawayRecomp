@@ -23,6 +23,15 @@ target_link_libraries(tgr_recompiled PUBLIC ps2_runtime)
 # The function table (one statement per entry point) is big enough on its own.
 set_target_properties(tgr_recompiled PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 32)
 set_source_files_properties("${TGR_GENERATED_DIR}/register_functions.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+
+# Every generated file includes the same heavy runtime headers: parse them once.
+target_precompile_headers(tgr_recompiled PRIVATE
+    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_runtime_macros.h"
+    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_runtime.h"
+    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_syscalls.h"
+    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_stubs.h"
+    "${TGR_GENERATED_DIR}/ps2_recompiled_functions.h"
+)
 if(MSVC)
     target_compile_options(tgr_recompiled PRIVATE /bigobj /W0)
 else()

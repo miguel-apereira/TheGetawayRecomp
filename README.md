@@ -6,10 +6,10 @@ to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp), and the PS2
 hardware it talked to (GS, VU, IOP, SPU2, IPU) is replaced with native code
 on SDL3 and Vulkan instead of being emulated.
 
-> **Status:** early boot, not playable. The recompiled game code compiles,
-> links and, on the in-progress `first-boot` branch, boots through the legal
-> notice and the Team Soho logo and plays the intro movie. Next goal: the
-> main menu. See [Progress](#progress).
+> **Status:** early boot, not playable. The recompiled game boots through
+> the legal notice, the Team Soho logo and the intro movie to the main menu,
+> which responds to the pad. Choosing New Game stops on the first loading
+> screen. Next goal: getting past it. See [Progress](#progress).
 
 ## Progress
 
@@ -23,11 +23,6 @@ Done, on `main`:
   extension, and the function map committed in `recomp/config/`.
 - Recompilation: `ps2_recomp` (our PS2Recomp fork) turns the ELF into C++,
   about 46,000 functions, which compile and link into the exe with MSVC.
-
-In progress, on the [`first-boot`](https://github.com/miguel-apereira/TheGetawayRecomp/tree/first-boot)
-branch (it comes to `main` by pull request once the game reaches its main
-menu):
-
 - The recompiled game runs on its own thread inside our exe, with a
   `--headless` mode for machines without a working Vulkan window.
 - Sony SDK functions are named from PS2Recomp's symbol database, so the
@@ -37,12 +32,16 @@ menu):
   server, reading from the extracted data and the PAK archives) and
   `STREAM.IRX` (sound engine, silent for now).
 - A native IPU with an MPEG-2 intra decoder written from the standard: the
-  intro movie plays.
+  intro movie and the main menu's moving background play.
 - The game's picture shows in the window (read back from PS2Recomp's
   software GS for now), with gamepad and keyboard input.
-- The legal notice and the Team Soho logo render.
+- The legal notice, the Team Soho logo, the intro movie and the main menu
+  (New Game, Load Game, Extra Features, Options) work.
 - Players no longer need the Vulkan SDK; validation is opt-in with
   `--validation`.
+- `tgr-profile`, a sampling profiler that needs no admin rights. In Release
+  the game runs at about a fifth of full speed, and most of that time goes
+  to PS2Recomp's software GS, which the native GS will replace.
 
 Still to come: a native GS renderer on Vulkan, VU1 microcode, sound (SPU2),
 memory card saves, then enhancements. The milestones are listed in
@@ -117,6 +116,12 @@ The exe takes `--iso <path>` to skip the file dialog, `--reinstall` to
 extract again, `--data <dir>` for another game data folder, and
 `--validation` for Vulkan validation layers.
 
+For development, `--headless` runs the game with no window and logs the
+guest PC every two seconds; add `--seconds <n>` to stop after a while,
+`--press START@70` (repeatable) for scripted pad presses,
+`--dump-frames <dir>` to save the picture every two seconds, and
+`--threads` or `--watch <address>` for more state in the log.
+
 Visual Studio can also open the folder directly and pick up `CMakePresets.json`.
 
 The full recompilation pipeline, including how to redo the Ghidra analysis
@@ -126,8 +131,9 @@ that produced `recomp/config/`, is described in [docs/PIPELINE.md](docs/PIPELINE
 
 | Path | What it holds | In git |
 |---|---|---|
-| `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements (`src/hw`, from `first-boot`), game glue | yes |
+| `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements (`src/hw`), game glue (`src/game`) | yes |
 | `tools/disc/` | `tgr-disc`: inspect and extract your ISO and its PAK archives | yes |
+| `tools/profile/` | `tgr-profile`: sampling profiler for the running game | yes |
 | `tools/scripts/` | PowerShell scripts for the pipeline | yes |
 | `recomp/config/` | PS2Recomp config and function map for SCUS-97133 | yes |
 | `recomp/generated/` | C++ generated from your ELF | **no** |

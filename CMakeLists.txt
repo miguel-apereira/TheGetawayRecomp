@@ -33,4 +33,7 @@ include(TgrDependencies)
 
 add_subdirectory(src)
 add_subdirectory(tools/disc)
+if(WIN32)
+    add_subdirectory(tools/profile)
+endif()
 add_subdirectory(recomp)

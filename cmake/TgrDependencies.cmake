@@ -37,9 +37,11 @@ if(TGR_BUILD_RECOMPILER OR TGR_WITH_RECOMPILED_CODE)
     tgr_require_submodule(PS2Recomp)
 endif()
 
-# The ps2_recomp tool expects to be a top-level CMake project, so it gets its
-# own build tree (always Release: it is a host tool and much faster that way).
-# The executable lands next to ours in bin/.
+# The ps2_recomp and ps2_analyzer tools expect to be a top-level CMake
+# project, so they get their own build tree (always Release: they are host
+# tools and much faster that way). The executables land next to ours in bin/.
+# ps2_analyzer is only used for its SCE SDK symbol database, which names the
+# Sony library functions in the stripped ELF (see analyze-ghidra.ps1).
 if(TGR_BUILD_RECOMPILER)
     include(ExternalProject)
     ExternalProject_Add(ps2recomp_tool
@@ -52,10 +54,10 @@ if(TGR_BUILD_RECOMPILER)
             -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
             -DPS2X_BUILD_RECOMP=ON
             -DPS2X_BUILD_RUNTIME=OFF
-            -DPS2X_BUILD_ANALYZER=OFF
+            -DPS2X_BUILD_ANALYZER=ON
             -DPS2X_BUILD_TEST=OFF
             -DPS2X_BUILD_STUDIO=OFF
-        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ps2_recomp --config Release
+        BUILD_COMMAND ${CMAKE_COMMAND} --build <BINARY_DIR> --target ps2_recomp ps2_analyzer --config Release
         INSTALL_COMMAND ""
         BUILD_ALWAYS ON
         USES_TERMINAL_BUILD ON
