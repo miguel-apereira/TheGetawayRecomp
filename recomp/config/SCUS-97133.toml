@@ -23,6 +23,7 @@ patch_syscalls = false
 patch_cop0 = true
 patch_cache = true
 jalr_indirect_fallback = false
+incremental_output = true
 stubs = [
   "__ieee754_rem_pio2f@0x0030A0C8",
   "__kernel_cosf@0x0030A5E0",
