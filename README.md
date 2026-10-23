@@ -6,10 +6,46 @@ to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp), and the PS2
 hardware it talked to (GS, VU, IOP, SPU2, IPU) is replaced with native code
 on SDL3 and Vulkan instead of being emulated.
 
-> **Status:** first boot. The exe asks for your ISO, checks it, extracts it
-> once, opens a Vulkan window and runs the recompiled game code, which gets
-> through kernel and SIF start-up and loads its IOP modules. Nothing is drawn
-> yet.
+> **Status:** early boot, not playable. The recompiled game boots through
+> the legal notice, the Team Soho logo and the intro movie to the main menu,
+> which responds to the pad. Choosing New Game stops on the first loading
+> screen. Next goal: getting past it. See [Progress](#progress).
+
+## Progress
+
+Done, on `main`:
+
+- Host shell: asks for your ISO, checks it is SCUS-97133, extracts it once
+  into a `game` folder, and opens an SDL3 window with a Vulkan swapchain.
+- Disc tools: ISO9660 reader and `tgr-disc`, which also lists, verifies and
+  extracts the game's `PACK_EE.PAK` and `PACK_IOP.PAK` archives.
+- Analysis: the stripped boot ELF analysed in Ghidra with the Emotion Engine
+  extension, and the function map committed in `recomp/config/`.
+- Recompilation: `ps2_recomp` (our PS2Recomp fork) turns the ELF into C++,
+  about 46,000 functions, which compile and link into the exe with MSVC.
+- The recompiled game runs on its own thread inside our exe, with a
+  `--headless` mode for machines without a working Vulkan window.
+- Sony SDK functions are named from PS2Recomp's symbol database, so the
+  runtime replaces the game's own SIF, CD, pad, memory card, DMA and GS
+  library code.
+- Native replacements for the game's own IOP modules: `PFS.IRX` (file
+  server, reading from the extracted data and the PAK archives) and
+  `STREAM.IRX` (sound engine, silent for now).
+- A native IPU with an MPEG-2 intra decoder written from the standard: the
+  intro movie and the main menu's moving background play.
+- The game's picture shows in the window (read back from PS2Recomp's
+  software GS for now), with gamepad and keyboard input.
+- The legal notice, the Team Soho logo, the intro movie and the main menu
+  (New Game, Load Game, Extra Features, Options) work.
+- Players no longer need the Vulkan SDK; validation is opt-in with
+  `--validation`.
+- `tgr-profile`, a sampling profiler that needs no admin rights. In Release
+  the game runs at about a fifth of full speed, and most of that time goes
+  to PS2Recomp's software GS, which the native GS will replace.
+
+Still to come: a native GS renderer on Vulkan, VU1 microcode, sound (SPU2),
+memory card saves, then enhancements. The milestones are listed in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#milestones).
 
 ## You need your own copy of the game
 
@@ -41,7 +77,7 @@ folder is ignored by git. See [iso/README.md](iso/README.md).
 - Git
 - A GPU with Vulkan 1.2 drivers
 - Developers only, optional: the [Vulkan SDK](https://vulkan.lunarg.com/)
-  for validation layers (`--validation`). Players only need a GPU driver.
+  for validation layers. Players only need a GPU driver.
 - For analysis: [Ghidra](https://ghidra-sre.org/) with the
   [Emotion Engine extension](https://github.com/chaoticgd/ghidra-emotionengine-reloaded),
   and PCSX2 as a reference
@@ -54,27 +90,50 @@ From a PowerShell prompt in the repository root:
 # 1. Fetch the third-party code in external/ at the pinned versions
 powershell -ExecutionPolicy Bypass -File tools\scripts\bootstrap.ps1
 
-# 2. Build (Debug by default; -Preset msvc-release for an optimised build)
+# 2. Build the host shell, tgr-disc and ps2_recomp
+#    (Debug by default; -Preset msvc-release for an optimised build)
 powershell -ExecutionPolicy Bypass -File tools\scripts\build.ps1
 
 # 3. Check your disc and extract the boot ELF and IRX modules to iso\extracted
 powershell -ExecutionPolicy Bypass -File tools\scripts\extract-disc.ps1
 
-# 4. Start the host shell (the first run asks for your ISO and extracts it)
+# 4. Turn the boot ELF into C++ in recomp\generated, using the committed config
+powershell -ExecutionPolicy Bypass -File tools\scripts\recompile.ps1
+
+# 5. Build again with the generated code compiled and linked in
+powershell -ExecutionPolicy Bypass -File tools\scripts\build.ps1 -WithRecompiledCode
+
+# 6. Start the exe (the first run asks for your ISO and extracts it)
 powershell -ExecutionPolicy Bypass -File tools\scripts\run.ps1
 ```
 
+Steps 1 to 3 and 6 alone give the host shell without any game code. The
+generated code is large: a clean build with it takes a long while, and the
+game runs too slowly in Debug, so use `-Preset msvc-release` to run it
+(pass the same `-Preset` to `run.ps1`).
+
+The exe takes `--iso <path>` to skip the file dialog, `--reinstall` to
+extract again, `--data <dir>` for another game data folder, and
+`--validation` for Vulkan validation layers.
+
+For development, `--headless` runs the game with no window and logs the
+guest PC every two seconds; add `--seconds <n>` to stop after a while,
+`--press START@70` (repeatable) for scripted pad presses,
+`--dump-frames <dir>` to save the picture every two seconds, and
+`--threads` or `--watch <address>` for more state in the log.
+
 Visual Studio can also open the folder directly and pick up `CMakePresets.json`.
 
-The full recompilation pipeline (Ghidra, `ps2_recomp`, building with the
-generated code) is described in [docs/PIPELINE.md](docs/PIPELINE.md).
+The full recompilation pipeline, including how to redo the Ghidra analysis
+that produced `recomp/config/`, is described in [docs/PIPELINE.md](docs/PIPELINE.md).
 
 ## Repository layout
 
 | Path | What it holds | In git |
 |---|---|---|
-| `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements, game overrides | yes |
+| `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements (`src/hw`), game glue (`src/game`) | yes |
 | `tools/disc/` | `tgr-disc`: inspect and extract your ISO and its PAK archives | yes |
+| `tools/profile/` | `tgr-profile`: sampling profiler for the running game | yes |
 | `tools/scripts/` | PowerShell scripts for the pipeline | yes |
 | `recomp/config/` | PS2Recomp config and function map for SCUS-97133 | yes |
 | `recomp/generated/` | C++ generated from your ELF | **no** |
