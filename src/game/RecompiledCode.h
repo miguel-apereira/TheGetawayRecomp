@@ -14,6 +14,11 @@ class PS2Runtime;
 namespace tgr::hw
 {
 class Ipu;
+class Vif0;
+namespace vu
+{
+class CodeMemory;
+}
 }
 
 // The C++ that ps2_recomp generated from SCUS_971.33 (recomp/generated),
@@ -83,6 +88,8 @@ private:
     std::unique_ptr<Pfs> pfs_;
     std::unique_ptr<Stream> stream_;
     std::unique_ptr<hw::Ipu> ipu_;
+    std::unique_ptr<hw::vu::CodeMemory> vu0Code_;
+    std::unique_ptr<hw::Vif0> vif0_;
     bool started_ = false;
 };
 

@@ -1,11 +1,18 @@
 # SPDX-License-Identifier: MIT
 #
 # Runs PS2Recomp's ps2_recomp on the extracted boot ELF using
-# recomp\config\SCUS-97133.toml. Output goes to recomp\generated (git-ignored).
+# recomp\config\SCUS-97133.toml, then tgr-vurecomp on the VU microprograms
+# listed in recomp\config\SCUS-97133.vu.csv. Output goes to recomp\generated
+# and recomp\generated\vu (git-ignored).
+#
+#   tools\scripts\recompile.ps1           # everything
+#   tools\scripts\recompile.ps1 -VuOnly   # only the VU microprograms
 
 param(
     [string]$Config = 'recomp\config\SCUS-97133.toml',
-    [string]$Preset = 'msvc-debug'
+    [string]$VuPrograms = 'recomp\config\SCUS-97133.vu.csv',
+    [string]$Preset = 'msvc-debug',
+    [switch]$VuOnly
 )
 
 . "$PSScriptRoot\common.ps1"
@@ -15,9 +22,16 @@ if (-not (Test-Path 'iso\extracted\SCUS_971.33')) {
     throw 'iso\extracted\SCUS_971.33 is missing. Run tools\scripts\extract-disc.ps1 first.'
 }
 
-$recomp = Find-BuiltTool 'ps2_recomp' $Preset
-New-Item -ItemType Directory -Force -Path 'recomp\generated' | Out-Null
-# ps2_recomp only writes files, so clear the last run's output: a function that
-# was renamed or merged in the new function map would otherwise linger.
-Get-ChildItem 'recomp\generated' -File -Include '*.cpp', '*.h' -Recurse | Remove-Item
-Invoke-Native $recomp @($Config)
+if (-not $VuOnly) {
+    $recomp = Find-BuiltTool 'ps2_recomp' $Preset
+    New-Item -ItemType Directory -Force -Path 'recomp\generated' | Out-Null
+    # ps2_recomp only writes files, so clear the last run's output: a function that
+    # was renamed or merged in the new function map would otherwise linger.
+    Get-ChildItem 'recomp\generated\*' -File -Include '*.cpp', '*.h' | Remove-Item
+    Invoke-Native $recomp @($Config)
+}
+
+$vurecomp = Find-BuiltTool 'tgr-vurecomp' $Preset
+New-Item -ItemType Directory -Force -Path 'recomp\generated\vu' | Out-Null
+Get-ChildItem 'recomp\generated\vu\*' -File -Include '*.cpp' | Remove-Item
+Invoke-Native $vurecomp @('iso\extracted\SCUS_971.33', $VuPrograms, 'recomp\generated\vu')

@@ -5,15 +5,149 @@
 #include "game/Pfs.h"
 #include "game/Stream.h"
 #include "hw/Ipu.h"
+#include "hw/Vif0.h"
+#include "hw/vu/VuPrograms.h"
 
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
 
+#include "app/Log.h"
+
+#include <algorithm>
 #include <cstring>
 #include <format>
+#include <unordered_set>
 
 namespace tgr::game
 {
+
+namespace
+{
+
+std::uint32_t floatBits(float value)
+{
+    std::uint32_t bits;
+    std::memcpy(&bits, &value, 4);
+    return bits;
+}
+
+float bitsFloat(std::uint32_t bits)
+{
+    float value;
+    std::memcpy(&value, &bits, 4);
+    return value;
+}
+
+// For VU0 code that was written without MPG (the EE can store to VU0 code
+// memory directly): finds the run of code memory around `address` that
+// matches the ELF and logs it as the line to add to SCUS-97133.vu.csv.
+void reportMissing(PS2Runtime& runtime, std::uint32_t address)
+{
+    static std::unordered_set<std::uint32_t> reported;
+    if (!reported.insert(address).second)
+        return;
+    const std::uint8_t* code = runtime.memory().getVU0Code();
+    const std::uint8_t* rdram = runtime.memory().getRDRAM();
+    const std::uint8_t* elfStart = rdram + 0x100000;
+    const std::uint8_t* elfEnd = rdram + 0x400000;
+    const std::uint32_t probe = std::min<std::uint32_t>(16, PS2_VU0_CODE_SIZE - address);
+    const std::uint8_t* found = std::search(elfStart, elfEnd, code + address, code + address + probe);
+    if (found == elfEnd)
+    {
+        log::warn("VU0: code at 0x{:04X} is not in the ELF; it cannot be compiled", address);
+        return;
+    }
+    std::uint32_t start = address;
+    const std::uint8_t* elf = found;
+    while (start >= 8 && elf - 8 >= elfStart && std::memcmp(code + start - 8, elf - 8, 8) == 0)
+    {
+        start -= 8;
+        elf -= 8;
+    }
+    std::uint32_t end = address;
+    while (end + 8 <= PS2_VU0_CODE_SIZE && std::memcmp(code + end, found + (end - address), 8) == 0)
+        end += 8;
+    log::warn("VU0: code at 0x{:04X} is not compiled. Add to recomp/config/SCUS-97133.vu.csv: 0,0x{:08X},0x{:X},0x{:X}",
+              address, static_cast<std::uint32_t>(elf - rdram), end - start, start);
+}
+
+// Runs a VU0 microprogram natively. VU0's registers are the EE's COP2
+// registers, so the program starts from and leaves its results in the EE
+// thread's context.
+void runVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& context, std::uint32_t address)
+{
+    hw::vu::State s;
+    for (int reg = 0; reg < 32; ++reg)
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(s.vf[reg]), _mm_castps_si128(context.vu0_vf[reg]));
+    for (int reg = 0; reg < 16; ++reg)
+        s.vi[reg] = static_cast<std::uint16_t>(context.vi[reg]);
+    _mm_storeu_si128(reinterpret_cast<__m128i*>(s.acc), _mm_castps_si128(context.vu0_acc));
+    s.q = floatBits(context.vu0_q);
+    s.p = floatBits(context.vu0_p);
+    s.i = floatBits(context.vu0_i);
+    s.r = 0x3F800000u | (static_cast<std::uint32_t>(_mm_cvtsi128_si32(_mm_castps_si128(context.vu0_r))) & 0x007FFFFFu);
+    s.mac = context.vu0_mac_flags;
+    s.status = context.vu0_status;
+    s.clip = context.vu0_clip_flags;
+    s.itop = context.vu0_itop;
+    s.data = runtime.memory().getVU0Data();
+    s.dataQuadwordMask = PS2_VU0_DATA_SIZE / 16 - 1;
+    s.budget = 1u << 24;
+    s.vf[0][0] = s.vf[0][1] = s.vf[0][2] = 0;
+    s.vf[0][3] = 0x3F800000u;
+    s.vi[0] = 0;
+
+    if (!code.run(s, address & (PS2_VU0_CODE_SIZE - 8)))
+        reportMissing(runtime, s.pc);
+
+    for (int reg = 1; reg < 32; ++reg)
+        context.vu0_vf[reg] = _mm_castsi128_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s.vf[reg])));
+    for (int reg = 1; reg < 16; ++reg)
+        context.vi[reg] = s.vi[reg];
+    context.vu0_acc = _mm_castsi128_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s.acc)));
+    context.vu0_q = bitsFloat(s.q);
+    context.vu0_p = bitsFloat(s.p);
+    context.vu0_i = bitsFloat(s.i);
+    context.vu0_r = _mm_castsi128_ps(_mm_set1_epi32(static_cast<int>(s.r)));
+    context.vu0_mac_flags = s.mac;
+    context.vu0_status = static_cast<std::uint16_t>(s.status);
+    context.vu0_clip_flags = s.clip;
+    context.vu0_clip_flags2 = s.clip;
+    context.vu0_pc = s.pc;
+    context.vu0_tpc = s.pc;
+}
+
+// Logs VU0 code the game uploads that tgr-vurecomp has not compiled, as the
+// line to add to recomp/config/SCUS-97133.vu.csv: the code is found in the
+// ELF image the runtime loaded into RAM.
+void reportUpload(PS2Runtime& runtime, std::uint32_t address, std::uint32_t bytes)
+{
+    const std::uint8_t* code = runtime.memory().getVU0Code() + address;
+    const std::uint64_t hash = hw::vu::programHash(code, bytes);
+    for (std::size_t n = 0; n < hw::vu::kProgramCount; ++n)
+    {
+        const hw::vu::ProgramInfo& program = hw::vu::kPrograms[n];
+        if (program.unit == 0 && program.loadAddress == address && program.size == bytes && program.hash == hash)
+            return;
+    }
+    static std::unordered_set<std::uint64_t> reported;
+    if (!reported.insert(hash).second)
+        return;
+    const std::uint8_t* rdram = runtime.memory().getRDRAM();
+    const std::uint8_t* elfStart = rdram + 0x100000;
+    const std::uint8_t* elfEnd = rdram + 0x400000;
+    const std::uint8_t* found = std::search(elfStart, elfEnd, code, code + bytes);
+    if (found == elfEnd)
+    {
+        log::warn("VU0: uploaded {} bytes at 0x{:04X} that are not in the ELF; they cannot be compiled", bytes,
+                  address);
+        return;
+    }
+    log::warn("VU0: uploaded code is not compiled. Add to recomp/config/SCUS-97133.vu.csv: 0,0x{:08X},0x{:X},0x{:X}",
+              static_cast<std::uint32_t>(found - rdram), bytes, address);
+}
+
+} // namespace
 
 RecompiledCodeInfo recompiledCodeInfo()
 {
@@ -65,6 +199,30 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
     stream_->install(*runtime_);
     ipu_ = std::make_unique<hw::Ipu>();
     runtime_->memory().setIpuDevice(ipu_.get());
+
+    // VU0 microprograms run as C++ compiled ahead of time by tgr-vurecomp,
+    // whether the EE starts them (VCALLMS) or VIF0 does (MSCAL).
+    PS2Runtime* runtime = runtime_.get();
+    vu0Code_ = std::make_unique<hw::vu::CodeMemory>(0, runtime->memory().getVU0Code(), PS2_VU0_CODE_SIZE);
+    hw::vu::CodeMemory* vu0Code = vu0Code_.get();
+    runtime_->setVu0MicroprogramHandler([runtime, vu0Code](std::uint8_t*, R5900Context* context, std::uint32_t address) {
+        runVu0(*runtime, *vu0Code, *context, address);
+    });
+    vif0_ = std::make_unique<hw::Vif0>(
+        runtime->memory().getVU0Code(), runtime->memory().getVU0Data(),
+        [runtime](std::uint32_t address, std::uint32_t itop) {
+            R5900Context* context = runtime->eeScheduler().currentContext();
+            if (!context)
+                context = &runtime->cpu();
+            context->vu0_itop = itop;
+            runtime->executeVU0Microprogram(runtime->memory().getRDRAM(), context, address);
+            return context->vu0_pc;
+        },
+        [runtime, vu0Code](std::uint32_t address, std::uint32_t bytes) {
+            vu0Code->invalidate();
+            reportUpload(*runtime, address, bytes);
+        });
+    runtime_->memory().setVif0Device(vif0_.get());
 
     runtime_->startGuest();
     started_ = true;

@@ -37,3 +37,25 @@ if(MSVC)
 else()
     target_compile_options(tgr_recompiled PRIVATE -w)
 endif()
+
+# tgr_vu_programs: the game's VU microprograms, compiled to C++ by tgr-vurecomp
+# (recomp/generated/vu). They run on the model in src/hw/vu/VuCore.h.
+file(GLOB TGR_VU_SOURCES CONFIGURE_DEPENDS "${TGR_GENERATED_DIR}/vu/*.cpp")
+if(NOT TGR_VU_SOURCES)
+    # tgr-vurecomp has not run yet (it is built with the rest): no programs.
+    message(WARNING "recomp/generated/vu/ is empty: VU microprograms will not run. Run tools/scripts/recompile.ps1.")
+    set(TGR_VU_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/vu_programs_none.cpp")
+    file(WRITE "${TGR_VU_SOURCES}"
+        "#include \"hw/vu/VuPrograms.h\"\n"
+        "namespace tgr::hw::vu\n{\n"
+        "const ProgramInfo kPrograms[] = {{0, 0, 0, 0, 0, nullptr}};\n"
+        "const std::size_t kProgramCount = 0;\n"
+        "}\n")
+endif()
+add_library(tgr_vu_programs STATIC ${TGR_VU_SOURCES})
+target_include_directories(tgr_vu_programs PRIVATE "${PROJECT_SOURCE_DIR}/src")
+if(MSVC)
+    target_compile_options(tgr_vu_programs PRIVATE /bigobj /W0)
+else()
+    target_compile_options(tgr_vu_programs PRIVATE -w)
+endif()
