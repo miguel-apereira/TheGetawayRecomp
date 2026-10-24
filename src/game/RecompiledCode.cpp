@@ -201,6 +201,82 @@ void checkVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& conte
     }
 }
 
+// Debugging aid (TGR_VU_CHECK=1): runs each VU1 microprogram both compiled
+// and on PS2Recomp's VU interpreter from the same state, keeps the compiled
+// result and logs where registers or VU1 data memory disagree. (The
+// interpreter's XGKICKs reach the GS too, so the picture is not meaningful.)
+void checkVu1(PS2Runtime& runtime, hw::vu::CodeMemory& code, hw::vu::State& s, std::uint32_t address)
+{
+    std::uint8_t* data = runtime.memory().getVU1Data();
+    const std::vector<std::uint8_t> dataBefore(data, data + PS2_VU1_DATA_SIZE);
+    const hw::vu::State before = s;
+
+    if (!code.run(s, address))
+        reportMissing(runtime, 1, s.pc);
+    const std::vector<std::uint8_t> dataNative(data, data + PS2_VU1_DATA_SIZE);
+
+    std::memcpy(data, dataBefore.data(), dataBefore.size());
+    VU1Interpreter& interpreter = runtime.vu1();
+    VU1State& is = interpreter.state();
+    for (int reg = 0; reg < 32; ++reg)
+        std::memcpy(is.vf[reg], before.vf[reg], 16);
+    for (int reg = 0; reg < 16; ++reg)
+        is.vi[reg] = static_cast<std::int16_t>(before.vi[reg]);
+    std::memcpy(is.acc, before.acc, 16);
+    std::memcpy(&is.q, &before.q, 4);
+    std::memcpy(&is.p, &before.p, 4);
+    std::memcpy(&is.i, &before.i, 4);
+    is.r = before.r;
+    is.mac = before.mac;
+    is.status = before.status;
+    is.clip = before.clip;
+    interpreter.execute(runtime.memory().getVU1Code(), PS2_VU1_CODE_SIZE, data, PS2_VU1_DATA_SIZE, runtime.gs(),
+                        &runtime.memory(), address, before.top, before.itop, 1u << 22);
+
+    static int reports = 0;
+    std::string differences;
+    for (int reg = 1; reg < 32; ++reg)
+    {
+        if (std::memcmp(s.vf[reg], is.vf[reg], 16) != 0)
+        {
+            std::uint32_t i[4];
+            std::memcpy(i, is.vf[reg], 16);
+            differences += std::format(" vf{} native {:08X} {:08X} {:08X} {:08X} interp {:08X} {:08X} {:08X} {:08X};", reg,
+                                       s.vf[reg][0], s.vf[reg][1], s.vf[reg][2], s.vf[reg][3], i[0], i[1], i[2], i[3]);
+        }
+    }
+    for (int reg = 1; reg < 16; ++reg)
+    {
+        if (s.vi[reg] != static_cast<std::uint16_t>(is.vi[reg]))
+            differences += std::format(" vi{} native {:04X} interp {:04X};", reg, s.vi[reg],
+                                       static_cast<std::uint16_t>(is.vi[reg]));
+    }
+    int memoryDifferences = 0;
+    for (std::uint32_t q = 0; q < PS2_VU1_DATA_SIZE / 16; ++q)
+    {
+        if (std::memcmp(dataNative.data() + q * 16, data + q * 16, 16) != 0 && memoryDifferences++ < 8)
+        {
+            std::uint32_t n[4];
+            std::uint32_t i[4];
+            std::memcpy(n, dataNative.data() + q * 16, 16);
+            std::memcpy(i, data + q * 16, 16);
+            differences += std::format(" mem[{:03X}] native {:08X} {:08X} {:08X} {:08X} interp {:08X} {:08X} {:08X} {:08X};", q,
+                                       n[0], n[1], n[2], n[3], i[0], i[1], i[2], i[3]);
+        }
+    }
+    if (memoryDifferences > 8)
+        differences += std::format(" ({} quadwords differ);", memoryDifferences);
+    std::memcpy(data, dataNative.data(), dataNative.size());
+    if (!differences.empty() && reports++ < 100)
+        log::warn("VU1 check at 0x{:04X} top {:03X}:{}", address, before.top, differences.substr(0, 2000));
+    else if (differences.empty())
+    {
+        static int matches = 0;
+        if (matches++ < 5)
+            log::info("VU1 check at 0x{:04X}: same", address);
+    }
+}
+
 // XGKICK: sends the GS packet at a VU1 data address (quadwords) down PATH1,
 // up to its last GIFtag (EOP). The packet is copied at once; the game builds
 // the next one in the other half of the double buffer.
@@ -326,10 +402,13 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
     hw::vu::State* vu1 = vu1_.get();
     hw::Vif::Host vif1Host;
     vif1Host.runMicroprogram = [runtime, vu1Code, vu1](std::uint32_t address, std::uint32_t top, std::uint32_t itop) {
+        static const bool check = environmentFlag("TGR_VU_CHECK");
         vu1->top = top;
         vu1->itop = itop;
         vu1->budget = 1u << 24;
-        if (!vu1Code->run(*vu1, address))
+        if (check)
+            checkVu1(*runtime, *vu1Code, *vu1, address);
+        else if (!vu1Code->run(*vu1, address))
             reportMissing(*runtime, 1, vu1->pc);
         return vu1->pc;
     };
