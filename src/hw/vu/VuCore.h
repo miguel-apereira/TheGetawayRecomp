@@ -96,6 +96,7 @@ struct State
     std::uint32_t pc = 0; // where the program stopped
     std::uint64_t budget = 0; // pairs left before giving up on a runaway program
     void (*xgkick)(State& s, std::uint32_t address) = nullptr; // VU1: sends a GIF packet
+    void* user = nullptr;                                       // for xgkick
 };
 
 // ============================================================================

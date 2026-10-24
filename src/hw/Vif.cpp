@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include "hw/Vif0.h"
+#include "hw/Vif.h"
 
 #include "app/Log.h"
 
@@ -12,12 +12,10 @@ namespace tgr::hw
 namespace
 {
 
-constexpr std::uint32_t kVuCodeSize = 0x1000; // VU0: 4 KB of microcode
-constexpr std::uint32_t kVuDataQuadwords = 0x100; // and 4 KB of data
-
-// VIF0_STAT bits.
+// VIFn_STAT bits.
 constexpr std::uint32_t kStatVpsWaiting = 1u << 0; // waiting for the data of a command
 constexpr std::uint32_t kStatMrk = 1u << 6;
+constexpr std::uint32_t kStatDbf = 1u << 7;  // VIF1: which half of VU1 memory TOPS points at
 constexpr std::uint32_t kStatVss = 1u << 8;  // stopped by FBRST.STP
 constexpr std::uint32_t kStatVfs = 1u << 9;  // stopped by FBRST.FBK
 constexpr std::uint32_t kStatVis = 1u << 10; // stopped by an I bit
@@ -26,7 +24,7 @@ constexpr std::uint32_t kStatEr0 = 1u << 12; // DMAtag mismatch
 constexpr std::uint32_t kStatEr1 = 1u << 13; // invalid VIFcode
 constexpr std::uint32_t kStallBits = kStatVss | kStatVfs | kStatVis | kStatEr0 | kStatEr1;
 
-// VIF0_ERR bits.
+// VIFn_ERR bits.
 constexpr std::uint32_t kErrMii = 1u << 0; // ignore I bits
 constexpr std::uint32_t kErrMe1 = 1u << 2; // ignore invalid VIFcodes
 
@@ -103,14 +101,34 @@ std::uint32_t extend(std::uint32_t value, int bits, bool isUnsigned)
     return (value ^ sign) - sign;
 }
 
+// Bytes of data after a GIFtag (PACKED, REGLIST or IMAGE).
+std::uint64_t gifTagDataBytes(std::uint64_t tagLow)
+{
+    const std::uint64_t loops = tagLow & 0x7FFF;
+    const std::uint64_t format = (tagLow >> 58) & 0x3;
+    std::uint64_t registers = (tagLow >> 60) & 0xF;
+    if (registers == 0)
+        registers = 16;
+    switch (format)
+    {
+    case 0: // PACKED: one quadword per register
+        return loops * registers * 16;
+    case 1: // REGLIST: one doubleword per register, padded to a quadword
+        return (loops * registers + 1) / 2 * 16;
+    default: // IMAGE
+        return loops * 16;
+    }
+}
+
 } // namespace
 
-Vif0::Vif0(std::uint8_t* vuCode, std::uint8_t* vuData, RunMicroprogram run, CodeUploaded uploaded)
-    : vuCode_(vuCode), vuData_(vuData), runMicroprogram_(std::move(run)), codeUploaded_(std::move(uploaded))
+Vif::Vif(int unit, std::uint8_t* vuCode, std::uint8_t* vuData, Host host)
+    : unit_(unit), codeSize_(unit == 0 ? 0x1000 : 0x4000), dataQuadwords_(unit == 0 ? 0x100 : 0x400), vuCode_(vuCode),
+      vuData_(vuData), host_(std::move(host))
 {
 }
 
-void Vif0::reset()
+void Vif::reset()
 {
     queue_.clear();
     stat_ = 0;
@@ -123,12 +141,17 @@ void Vif0::reset()
     code_ = 0;
     itops_ = 0;
     itop_ = 0;
+    base_ = 0;
+    ofst_ = 0;
+    tops_ = 0;
+    top_ = 0;
     row_ = {};
     col_ = {};
     interrupt_ = false;
+    directBuffer_.clear();
 }
 
-void Vif0::writeRegister(std::uint32_t offset, std::uint32_t value)
+void Vif::writeRegister(std::uint32_t offset, std::uint32_t value)
 {
     switch (offset)
     {
@@ -176,16 +199,18 @@ void Vif0::writeRegister(std::uint32_t offset, std::uint32_t value)
     }
 }
 
-std::uint32_t Vif0::readRegister(std::uint32_t offset)
+std::uint32_t Vif::readRegister(std::uint32_t offset)
 {
     switch (offset)
     {
     case 0x00:
     {
-        std::uint32_t stat = stat_ & ~(0x3u | (0xFu << 24));
+        std::uint32_t stat = stat_ & ~(0x3u | (0x1Fu << 24));
         if (!queue_.empty())
             stat |= kStatVpsWaiting;
-        stat |= std::min<std::uint32_t>(static_cast<std::uint32_t>(queue_.size() / 4), 8) << 24;
+        const std::uint32_t fifoQuadwords = std::min<std::uint32_t>(static_cast<std::uint32_t>(queue_.size() / 4),
+                                                                    unit_ == 0 ? 8u : 16u);
+        stat |= fifoQuadwords << 24;
         return stat;
     }
     case 0x20:
@@ -204,8 +229,16 @@ std::uint32_t Vif0::readRegister(std::uint32_t offset)
         return code_;
     case 0x90:
         return itops_;
+    case 0xA0:
+        return base_;
+    case 0xB0:
+        return ofst_;
+    case 0xC0:
+        return tops_;
     case 0xD0:
         return itop_;
+    case 0xE0:
+        return top_;
     case 0x100:
     case 0x110:
     case 0x120:
@@ -221,25 +254,25 @@ std::uint32_t Vif0::readRegister(std::uint32_t offset)
     }
 }
 
-void Vif0::pushData(const std::uint32_t* words, std::uint32_t count)
+void Vif::pushData(const std::uint32_t* words, std::uint32_t count)
 {
     queue_.insert(queue_.end(), words, words + count);
     run();
 }
 
-bool Vif0::stalled() const
+bool Vif::stalled() const
 {
     return (stat_ & kStallBits) != 0;
 }
 
-bool Vif0::takeInterrupt()
+bool Vif::takeInterrupt()
 {
     const bool raised = interrupt_;
     interrupt_ = false;
     return raised;
 }
 
-std::uint32_t Vif0::commandLength(std::uint32_t code) const
+std::uint32_t Vif::commandLength(std::uint32_t code) const
 {
     const std::uint32_t command = commandOf(code);
     const std::uint32_t num = (code >> 16) & 0xFF;
@@ -276,7 +309,7 @@ std::uint32_t Vif0::commandLength(std::uint32_t code) const
     return (vectors * bitsPerVector + 31) / 32;
 }
 
-void Vif0::run()
+void Vif::run()
 {
     while (!queue_.empty() && !stalled())
     {
@@ -296,7 +329,48 @@ void Vif0::run()
     }
 }
 
-void Vif0::execute(std::uint32_t code)
+void Vif::startMicroprogram(std::uint32_t address)
+{
+    itop_ = itops_;
+    if (unit_ == 1)
+    {
+        // The program gets the half TOPS points at; the next one gets the other.
+        top_ = tops_;
+        tops_ = (stat_ & kStatDbf) ? base_ : (base_ + ofst_) & 0x3FF;
+        stat_ ^= kStatDbf;
+    }
+    lastPc_ = host_.runMicroprogram(address % codeSize_, top_, itop_);
+}
+
+void Vif::direct(bool directHl)
+{
+    // PATH2 carries a GS packet stream: a GIFtag's data can run on into the
+    // next DIRECT. Send only whole GIFtags; keep a partial one for later.
+    const std::uint32_t words = (code_ & 0xFFFF) == 0 ? 65536 * 4 : (code_ & 0xFFFF) * 4;
+    const std::size_t start = directBuffer_.size();
+    directBuffer_.resize(start + static_cast<std::size_t>(words) * 4);
+    for (std::uint32_t i = 0; i < words; ++i)
+        std::memcpy(directBuffer_.data() + start + i * 4, &queue_[1 + i], 4);
+
+    std::size_t complete = 0;
+    for (std::size_t at = 0; at + 16 <= directBuffer_.size();)
+    {
+        std::uint64_t tagLow;
+        std::memcpy(&tagLow, directBuffer_.data() + at, 8);
+        const std::uint64_t end = at + 16 + gifTagDataBytes(tagLow);
+        if (end > directBuffer_.size())
+            break;
+        at = static_cast<std::size_t>(end);
+        complete = at;
+    }
+    if (complete == 0)
+        return;
+    if (host_.sendPath2)
+        host_.sendPath2(directBuffer_.data(), static_cast<std::uint32_t>(complete), directHl);
+    directBuffer_.erase(directBuffer_.begin(), directBuffer_.begin() + static_cast<std::ptrdiff_t>(complete));
+}
+
+void Vif::execute(std::uint32_t code)
 {
     const std::uint32_t command = commandOf(code);
     const std::uint32_t imm = code & 0xFFFF;
@@ -320,14 +394,9 @@ void Vif0::execute(std::uint32_t code)
     {
     case kNop:
     case kFlushe:
-    // VIF1-only commands do nothing on VIF0.
-    case kOffset:
-    case kBase:
-    case kMskpath3:
     case kFlush:
     case kFlusha:
-    case kDirect:
-    case kDirecthl:
+        // Microprograms and GIF transfers finish before the VIF moves on.
         return;
     case kStcycl:
         cycle_ = imm;
@@ -342,14 +411,33 @@ void Vif0::execute(std::uint32_t code)
         mark_ = imm;
         stat_ |= kStatMrk;
         return;
+    case kOffset:
+        if (unit_ == 1)
+        {
+            ofst_ = imm & 0x3FF;
+            stat_ &= ~kStatDbf;
+            tops_ = base_;
+        }
+        return;
+    case kBase:
+        if (unit_ == 1)
+            base_ = imm & 0x3FF;
+        return;
+    case kMskpath3:
+        if (unit_ == 1 && host_.maskPath3)
+            host_.maskPath3((imm & 0x8000) != 0);
+        return;
+    case kDirect:
+    case kDirecthl:
+        if (unit_ == 1)
+            direct(command == kDirecthl);
+        return;
     case kMscal:
     case kMscalf:
-        itop_ = itops_;
-        lastPc_ = runMicroprogram_((imm * 8u) % kVuCodeSize, itop_);
+        startMicroprogram(imm * 8u);
         return;
     case kMscnt:
-        itop_ = itops_;
-        lastPc_ = runMicroprogram_(lastPc_ % kVuCodeSize, itop_);
+        startMicroprogram(lastPc_);
         return;
     case kStmask:
         mask_ = queue_[1];
@@ -365,24 +453,24 @@ void Vif0::execute(std::uint32_t code)
     case kMpg:
     {
         const std::uint32_t count = (num_ == 0 ? 256 : num_) * 2;
-        const std::uint32_t start = (imm * 8u) % kVuCodeSize;
+        const std::uint32_t start = (imm * 8u) % codeSize_;
         std::uint32_t address = start;
         for (std::uint32_t i = 0; i < count; ++i)
         {
             std::memcpy(vuCode_ + address, &queue_[1 + i], 4);
-            address = (address + 4) % kVuCodeSize;
+            address = (address + 4) % codeSize_;
         }
-        codeUploaded_(start, count * 4);
+        host_.codeUploaded(start, count * 4);
         return;
     }
     default:
         break;
     }
 
-    // An invalid VIFcode stalls VIF0 with ER1 unless ERR.ME1 masks it.
+    // An invalid VIFcode stalls the VIF with ER1 unless ERR.ME1 masks it.
     static int reported = 0;
     if (reported++ < 8)
-        log::warn("VIF0: invalid VIFcode 0x{:08X}", code);
+        log::warn("VIF{}: invalid VIFcode 0x{:08X}", unit_, code);
     if (!(err_ & kErrMe1))
     {
         stat_ |= kStatEr1 | kStatInt;
@@ -390,7 +478,7 @@ void Vif0::execute(std::uint32_t code)
     }
 }
 
-void Vif0::unpack(std::uint32_t code)
+void Vif::unpack(std::uint32_t code)
 {
     const std::uint32_t command = commandOf(code);
     const std::uint32_t imm = code & 0xFFFF;
@@ -405,7 +493,9 @@ void Vif0::unpack(std::uint32_t code)
         cl = 1;
     if (wl == 0)
         wl = 1;
-    const std::uint32_t base = imm & 0x3FF;
+    std::uint32_t base = imm & 0x3FF;
+    if (unit_ == 1 && (imm & 0x8000)) // FLG: relative to the double buffer TOPS points at
+        base += tops_;
     const int bits = vl == 3 ? 16 : static_cast<int>(32u >> vl);
 
     BitReader reader(queue_);
@@ -460,10 +550,10 @@ void Vif0::unpack(std::uint32_t code)
     num_ = 0;
 }
 
-void Vif0::writeUnpacked(std::uint32_t address, std::uint32_t cyclePosition, const std::array<std::uint32_t, 4>& data,
-                         bool fromData, std::uint32_t mask)
+void Vif::writeUnpacked(std::uint32_t address, std::uint32_t cyclePosition, const std::array<std::uint32_t, 4>& data,
+                        bool fromData, std::uint32_t mask)
 {
-    std::uint8_t* target = vuData_ + (address % kVuDataQuadwords) * 16;
+    std::uint8_t* target = vuData_ + (address % dataQuadwords_) * 16;
     const std::uint32_t maskRow = std::min<std::uint32_t>(cyclePosition, 3);
     for (std::uint32_t field = 0; field < 4; ++field)
     {

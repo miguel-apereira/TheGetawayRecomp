@@ -14,10 +14,11 @@ class PS2Runtime;
 namespace tgr::hw
 {
 class Ipu;
-class Vif0;
+class Vif;
 namespace vu
 {
 class CodeMemory;
+struct State;
 }
 }
 
@@ -89,7 +90,10 @@ private:
     std::unique_ptr<Stream> stream_;
     std::unique_ptr<hw::Ipu> ipu_;
     std::unique_ptr<hw::vu::CodeMemory> vu0Code_;
-    std::unique_ptr<hw::Vif0> vif0_;
+    std::unique_ptr<hw::vu::CodeMemory> vu1Code_;
+    std::unique_ptr<hw::vu::State> vu1_; // VU1's registers live between microprograms
+    std::unique_ptr<hw::Vif> vif0_;
+    std::unique_ptr<hw::Vif> vif1_;
     bool started_ = false;
 };
 

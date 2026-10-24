@@ -5,7 +5,7 @@
 #include "game/Pfs.h"
 #include "game/Stream.h"
 #include "hw/Ipu.h"
-#include "hw/Vif0.h"
+#include "hw/Vif.h"
 #include "hw/vu/VuPrograms.h"
 
 #include "ps2_runtime.h"
@@ -54,23 +54,24 @@ float bitsFloat(std::uint32_t bits)
     return value;
 }
 
-// For VU0 code that was written without MPG (the EE can store to VU0 code
-// memory directly): finds the run of code memory around `address` that
-// matches the ELF and logs where it comes from.
-void reportMissing(PS2Runtime& runtime, std::uint32_t address)
+// For VU code tgr-vurecomp did not compile (not in .vutext, or changed after
+// upload): finds the run of code memory around `address` that matches the
+// ELF and logs where it comes from.
+void reportMissing(PS2Runtime& runtime, int unit, std::uint32_t address)
 {
     static std::unordered_set<std::uint32_t> reported;
-    if (!reported.insert(address).second)
+    if (!reported.insert(static_cast<std::uint32_t>(unit) << 16 | address).second)
         return;
-    const std::uint8_t* code = runtime.memory().getVU0Code();
+    const std::uint8_t* code = unit == 0 ? runtime.memory().getVU0Code() : runtime.memory().getVU1Code();
+    const std::uint32_t codeSize = unit == 0 ? PS2_VU0_CODE_SIZE : PS2_VU1_CODE_SIZE;
     const std::uint8_t* rdram = runtime.memory().getRDRAM();
     const std::uint8_t* elfStart = rdram + 0x100000;
     const std::uint8_t* elfEnd = rdram + 0x400000;
-    const std::uint32_t probe = std::min<std::uint32_t>(16, PS2_VU0_CODE_SIZE - address);
+    const std::uint32_t probe = std::min<std::uint32_t>(16, codeSize - address);
     const std::uint8_t* found = std::search(elfStart, elfEnd, code + address, code + address + probe);
     if (found == elfEnd)
     {
-        log::warn("VU0: code at 0x{:04X} is not in the ELF; it cannot be compiled", address);
+        log::warn("VU{}: code at 0x{:04X} is not in the ELF; it cannot be compiled", unit, address);
         return;
     }
     std::uint32_t start = address;
@@ -81,10 +82,10 @@ void reportMissing(PS2Runtime& runtime, std::uint32_t address)
         elf -= 8;
     }
     std::uint32_t end = address;
-    while (end + 8 <= PS2_VU0_CODE_SIZE && std::memcmp(code + end, found + (end - address), 8) == 0)
+    while (end + 8 <= codeSize && std::memcmp(code + end, found + (end - address), 8) == 0)
         end += 8;
-    log::warn("VU0: code at 0x{:04X} is not compiled: ELF 0x{:08X}, {} bytes, loaded at 0x{:X}",
-              address, static_cast<std::uint32_t>(elf - rdram), end - start, start);
+    log::warn("VU{}: code at 0x{:04X} is not compiled: ELF 0x{:08X}, {} bytes, loaded at 0x{:X}", unit, address,
+              static_cast<std::uint32_t>(elf - rdram), end - start, start);
 }
 
 // Runs a VU0 microprogram natively. VU0's registers are the EE's COP2
@@ -114,7 +115,7 @@ void runVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& context
     s.vi[0] = 0;
 
     if (!code.run(s, address & (PS2_VU0_CODE_SIZE - 8)))
-        reportMissing(runtime, s.pc);
+        reportMissing(runtime, 0, s.pc);
 
     for (int reg = 1; reg < 32; ++reg)
         context.vu0_vf[reg] = _mm_castsi128_ps(_mm_loadu_si128(reinterpret_cast<const __m128i*>(s.vf[reg])));
@@ -200,33 +201,37 @@ void checkVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& conte
     }
 }
 
-// Logs VU0 code the game uploads that tgr-vurecomp has not compiled, with
-// where it sits in the ELF image the runtime loaded into RAM.
-void reportUpload(PS2Runtime& runtime, std::uint32_t address, std::uint32_t bytes)
+// XGKICK: sends the GS packet at a VU1 data address (quadwords) down PATH1,
+// up to its last GIFtag (EOP). The packet is copied at once; the game builds
+// the next one in the other half of the double buffer.
+void xgkick(hw::vu::State& s, std::uint32_t address)
 {
-    const std::uint8_t* code = runtime.memory().getVU0Code() + address;
-    const std::uint64_t hash = hw::vu::programHash(code, bytes);
-    for (std::size_t n = 0; n < hw::vu::kProgramCount; ++n)
+    auto& runtime = *static_cast<PS2Runtime*>(s.user);
+    const std::uint32_t quadwords = s.dataQuadwordMask + 1;
+    std::vector<std::uint8_t> packet;
+    std::uint32_t at = address & s.dataQuadwordMask;
+    for (std::uint32_t guard = 0; guard < quadwords; ++guard)
     {
-        const hw::vu::ProgramInfo& program = hw::vu::kPrograms[n];
-        if (program.unit == 0 && program.loadAddress == address && program.size == bytes && program.hash == hash)
-            return;
+        std::uint64_t tagLow;
+        std::memcpy(&tagLow, s.data + at * 16, 8);
+        const std::uint64_t loops = tagLow & 0x7FFF;
+        const std::uint64_t format = (tagLow >> 58) & 0x3;
+        std::uint64_t registers = (tagLow >> 60) & 0xF;
+        if (registers == 0)
+            registers = 16;
+        const std::uint64_t dataQuadwords = format == 0   ? loops * registers
+                                            : format == 1 ? (loops * registers + 1) / 2
+                                                          : loops;
+        for (std::uint64_t q = 0; q <= dataQuadwords && q < quadwords; ++q)
+        {
+            const std::uint8_t* source = s.data + ((at + q) & s.dataQuadwordMask) * 16;
+            packet.insert(packet.end(), source, source + 16);
+        }
+        at = static_cast<std::uint32_t>((at + 1 + dataQuadwords) & s.dataQuadwordMask);
+        if (tagLow & 0x8000) // EOP
+            break;
     }
-    static std::unordered_set<std::uint64_t> reported;
-    if (!reported.insert(hash).second)
-        return;
-    const std::uint8_t* rdram = runtime.memory().getRDRAM();
-    const std::uint8_t* elfStart = rdram + 0x100000;
-    const std::uint8_t* elfEnd = rdram + 0x400000;
-    const std::uint8_t* found = std::search(elfStart, elfEnd, code, code + bytes);
-    if (found == elfEnd)
-    {
-        log::warn("VU0: uploaded {} bytes at 0x{:04X} that are not in the ELF; they cannot be compiled", bytes,
-                  address);
-        return;
-    }
-    log::warn("VU0: uploaded code is not compiled: ELF 0x{:08X}, {} bytes, loaded at 0x{:X}",
-              static_cast<std::uint32_t>(found - rdram), bytes, address);
+    runtime.memory().submitGifPacket(GifPathId::Path1, packet.data(), static_cast<std::uint32_t>(packet.size()));
 }
 
 } // namespace
@@ -294,21 +299,48 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
         else
             runVu0(*runtime, *vu0Code, *context, address);
     });
-    vif0_ = std::make_unique<hw::Vif0>(
-        runtime->memory().getVU0Code(), runtime->memory().getVU0Data(),
-        [runtime](std::uint32_t address, std::uint32_t itop) {
-            R5900Context* context = runtime->eeScheduler().currentContext();
-            if (!context)
-                context = &runtime->cpu();
-            context->vu0_itop = itop;
-            runtime->executeVU0Microprogram(runtime->memory().getRDRAM(), context, address);
-            return context->vu0_pc;
-        },
-        [runtime, vu0Code](std::uint32_t address, std::uint32_t bytes) {
-            vu0Code->invalidate();
-            reportUpload(*runtime, address, bytes);
-        });
+    hw::Vif::Host vif0Host;
+    vif0Host.runMicroprogram = [runtime](std::uint32_t address, std::uint32_t, std::uint32_t itop) {
+        R5900Context* context = runtime->eeScheduler().currentContext();
+        if (!context)
+            context = &runtime->cpu();
+        context->vu0_itop = itop;
+        runtime->executeVU0Microprogram(runtime->memory().getRDRAM(), context, address);
+        return context->vu0_pc;
+    };
+    vif0Host.codeUploaded = [vu0Code](std::uint32_t, std::uint32_t) { vu0Code->invalidate(); };
+    vif0_ = std::make_unique<hw::Vif>(0, runtime->memory().getVU0Code(), runtime->memory().getVU0Data(),
+                                      std::move(vif0Host));
     runtime_->memory().setVif0Device(vif0_.get());
+
+    // VU1 runs compiled microprograms too. Its registers are its own and stay
+    // between programs; XGKICK sends GS packets down PATH1.
+    vu1Code_ = std::make_unique<hw::vu::CodeMemory>(1, runtime->memory().getVU1Code(), PS2_VU1_CODE_SIZE);
+    vu1_ = std::make_unique<hw::vu::State>();
+    vu1_->vf[0][3] = 0x3F800000u;
+    vu1_->data = runtime->memory().getVU1Data();
+    vu1_->dataQuadwordMask = PS2_VU1_DATA_SIZE / 16 - 1;
+    vu1_->user = runtime;
+    vu1_->xgkick = &xgkick;
+    hw::vu::CodeMemory* vu1Code = vu1Code_.get();
+    hw::vu::State* vu1 = vu1_.get();
+    hw::Vif::Host vif1Host;
+    vif1Host.runMicroprogram = [runtime, vu1Code, vu1](std::uint32_t address, std::uint32_t top, std::uint32_t itop) {
+        vu1->top = top;
+        vu1->itop = itop;
+        vu1->budget = 1u << 24;
+        if (!vu1Code->run(*vu1, address))
+            reportMissing(*runtime, 1, vu1->pc);
+        return vu1->pc;
+    };
+    vif1Host.codeUploaded = [vu1Code](std::uint32_t, std::uint32_t) { vu1Code->invalidate(); };
+    vif1Host.sendPath2 = [runtime](const std::uint8_t* data, std::uint32_t bytes, bool directHl) {
+        runtime->memory().submitGifPacket(GifPathId::Path2, data, bytes, true, directHl);
+    };
+    vif1Host.maskPath3 = [runtime](bool masked) { runtime->memory().setPath3Masked(masked); };
+    vif1_ = std::make_unique<hw::Vif>(1, runtime->memory().getVU1Code(), runtime->memory().getVU1Data(),
+                                      std::move(vif1Host));
+    runtime_->memory().setVif1Device(vif1_.get());
 
     runtime_->startGuest();
     started_ = true;
