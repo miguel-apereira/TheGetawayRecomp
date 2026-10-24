@@ -20,17 +20,35 @@ target_include_directories(tgr_recompiled PUBLIC "${TGR_GENERATED_DIR}")
 target_link_libraries(tgr_recompiled PUBLIC ps2_runtime)
 
 # Thousands of small generated files: batch them, and skip warnings we cannot fix.
+# A batch holds the functions of one 2 KiB block of guest code (files are named
+# <name>_0x<address>.cpp), so adding or removing a function only changes its
+# own batch. Fixed-size batches would shift every batch after it instead.
 # The function table (one statement per entry point) is big enough on its own.
-set_target_properties(tgr_recompiled PROPERTIES UNITY_BUILD ON UNITY_BUILD_BATCH_SIZE 32)
+set_target_properties(tgr_recompiled PROPERTIES UNITY_BUILD ON UNITY_BUILD_MODE GROUP)
+foreach(source IN LISTS TGR_GENERATED_SOURCES)
+    get_filename_component(name "${source}" NAME_WE)
+    if(name STREQUAL "register_functions")
+        continue()
+    elseif(name MATCHES "_0x([0-9a-fA-F]+)$")
+        math(EXPR block "0x${CMAKE_MATCH_1} >> 11" OUTPUT_FORMAT HEXADECIMAL)
+        set(group "code_${block}")
+    else()
+        set(group "other") # not named <name>_0x<address>: not expected, but kept building
+    endif()
+    set_property(SOURCE "${source}" PROPERTY UNITY_GROUP "${group}")
+endforeach()
 set_source_files_properties("${TGR_GENERATED_DIR}/register_functions.cpp" PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 
-# Every generated file includes the same heavy runtime headers: parse them once.
+# Every generated file includes the same instruction macros: parse them once.
+# Only the slim guest headers go in here. A header in the precompiled header is
+# part of every file, so a change to it rebuilds everything: ps2_runtime.h
+# changes whenever a host takes over some hardware, and
+# ps2_recompiled_functions.h whenever a function is added or renamed. With
+# incremental_output in the ps2_recomp config, generated files include neither
+# and declare what they call themselves (register_functions.cpp, the one file
+# that needs the runtime class, includes it on its own).
 target_precompile_headers(tgr_recompiled PRIVATE
-    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_runtime_macros.h"
-    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_runtime.h"
-    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_syscalls.h"
-    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_stubs.h"
-    "${TGR_GENERATED_DIR}/ps2_recompiled_functions.h"
+    "$<TARGET_PROPERTY:ps2_runtime,SOURCE_DIR>/include/ps2_guest_macros.h"
 )
 if(MSVC)
     target_compile_options(tgr_recompiled PRIVATE /bigobj /W0)
