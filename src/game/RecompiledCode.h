@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include "game/GsTools.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -58,6 +60,11 @@ public:
     // game's and our native IPU in the machine, and starts the guest thread.
     bool start(const std::filesystem::path& gameDataDir, std::string& error);
 
+    // GS inventory and GS dumps (see GsTools). Set before start().
+    void setGsTools(GsToolOptions options) { gsToolOptions_ = std::move(options); }
+    // F9: starts a GS dump at the next vsync, or stops the one in progress.
+    void toggleGsDump();
+
     // True once the guest thread has returned or died.
     bool finished() const;
 
@@ -102,6 +109,8 @@ private:
     std::unique_ptr<hw::vu::State> vu1_; // VU1's registers live between microprograms
     std::unique_ptr<hw::Vif> vif0_;
     std::unique_ptr<hw::Vif> vif1_;
+    GsToolOptions gsToolOptions_;
+    std::unique_ptr<GsTools> gsTools_;
     bool started_ = false;
 };
 
