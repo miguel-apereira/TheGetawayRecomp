@@ -14,15 +14,31 @@
 #include "app/Log.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <format>
+#include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace tgr::game
 {
 
 namespace
 {
+
+bool environmentFlag(const char* name)
+{
+#ifdef _MSC_VER
+    char* value = nullptr;
+    std::size_t size = 0;
+    const bool set = _dupenv_s(&value, &size, name) == 0 && value != nullptr;
+    std::free(value);
+    return set;
+#else
+    return std::getenv(name) != nullptr;
+#endif
+}
 
 std::uint32_t floatBits(float value)
 {
@@ -40,7 +56,7 @@ float bitsFloat(std::uint32_t bits)
 
 // For VU0 code that was written without MPG (the EE can store to VU0 code
 // memory directly): finds the run of code memory around `address` that
-// matches the ELF and logs it as the line to add to SCUS-97133.vu.csv.
+// matches the ELF and logs where it comes from.
 void reportMissing(PS2Runtime& runtime, std::uint32_t address)
 {
     static std::unordered_set<std::uint32_t> reported;
@@ -67,7 +83,7 @@ void reportMissing(PS2Runtime& runtime, std::uint32_t address)
     std::uint32_t end = address;
     while (end + 8 <= PS2_VU0_CODE_SIZE && std::memcmp(code + end, found + (end - address), 8) == 0)
         end += 8;
-    log::warn("VU0: code at 0x{:04X} is not compiled. Add to recomp/config/SCUS-97133.vu.csv: 0,0x{:08X},0x{:X},0x{:X}",
+    log::warn("VU0: code at 0x{:04X} is not compiled: ELF 0x{:08X}, {} bytes, loaded at 0x{:X}",
               address, static_cast<std::uint32_t>(elf - rdram), end - start, start);
 }
 
@@ -117,9 +133,75 @@ void runVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& context
     context.vu0_tpc = s.pc;
 }
 
-// Logs VU0 code the game uploads that tgr-vurecomp has not compiled, as the
-// line to add to recomp/config/SCUS-97133.vu.csv: the code is found in the
-// ELF image the runtime loaded into RAM.
+// Debugging aid (TGR_VU_CHECK=1): runs each VU0 microprogram both compiled
+// and on PS2Recomp's VU interpreter, from the same state, keeps the compiled
+// result and logs where the two disagree.
+void checkVu0(PS2Runtime& runtime, hw::vu::CodeMemory& code, R5900Context& context, std::uint32_t address)
+{
+    std::uint8_t* data = runtime.memory().getVU0Data();
+    const std::vector<std::uint8_t> dataBefore(data, data + PS2_VU0_DATA_SIZE);
+    R5900Context interpreted = context;
+
+    runVu0(runtime, code, context, address);
+    const std::vector<std::uint8_t> dataNative(data, data + PS2_VU0_DATA_SIZE);
+
+    std::memcpy(data, dataBefore.data(), dataBefore.size());
+    runtime.setVu0MicroprogramHandler({});
+    runtime.executeVU0Microprogram(runtime.memory().getRDRAM(), &interpreted, address);
+    runtime.setVu0MicroprogramHandler([&runtime, &code](std::uint8_t*, R5900Context* c, std::uint32_t a) {
+        checkVu0(runtime, code, *c, a);
+    });
+
+    static int reports = 0;
+    std::string differences;
+    for (int reg = 1; reg < 32; ++reg)
+    {
+        if (std::memcmp(&context.vu0_vf[reg], &interpreted.vu0_vf[reg], 16) != 0)
+        {
+            alignas(16) std::uint32_t n[4];
+            alignas(16) std::uint32_t i[4];
+            std::memcpy(n, &context.vu0_vf[reg], 16);
+            std::memcpy(i, &interpreted.vu0_vf[reg], 16);
+            differences += std::format(" vf{} native {:08X} {:08X} {:08X} {:08X} interp {:08X} {:08X} {:08X} {:08X};", reg,
+                                       n[0], n[1], n[2], n[3], i[0], i[1], i[2], i[3]);
+        }
+    }
+    for (int reg = 1; reg < 16; ++reg)
+    {
+        if (static_cast<std::uint16_t>(context.vi[reg]) != static_cast<std::uint16_t>(interpreted.vi[reg]))
+            differences += std::format(" vi{} native {:04X} interp {:04X};", reg, static_cast<std::uint16_t>(context.vi[reg]),
+                                       static_cast<std::uint16_t>(interpreted.vi[reg]));
+    }
+    for (std::uint32_t q = 0; q < PS2_VU0_DATA_SIZE / 16; ++q)
+    {
+        if (std::memcmp(dataNative.data() + q * 16, data + q * 16, 16) != 0)
+        {
+            std::uint32_t n[4];
+            std::uint32_t i[4];
+            std::memcpy(n, dataNative.data() + q * 16, 16);
+            std::memcpy(i, data + q * 16, 16);
+            differences += std::format(" mem[{:03X}] native {:08X} {:08X} {:08X} {:08X} interp {:08X} {:08X} {:08X} {:08X};", q,
+                                       n[0], n[1], n[2], n[3], i[0], i[1], i[2], i[3]);
+        }
+    }
+    if (context.vu0_mac_flags != interpreted.vu0_mac_flags || context.vu0_status != interpreted.vu0_status ||
+        context.vu0_clip_flags != interpreted.vu0_clip_flags)
+        differences += std::format(" flags native mac {:04X} status {:03X} clip {:06X} interp mac {:04X} status {:03X} clip {:06X};",
+                                   context.vu0_mac_flags, context.vu0_status, context.vu0_clip_flags,
+                                   interpreted.vu0_mac_flags, interpreted.vu0_status, interpreted.vu0_clip_flags);
+    std::memcpy(data, dataNative.data(), dataNative.size());
+    if (!differences.empty() && reports++ < 200)
+        log::warn("VU0 check at 0x{:04X}:{}", address, differences.substr(0, 1500));
+    else if (differences.empty() && reports < 200)
+    {
+        static int matches = 0;
+        if (matches++ < 5)
+            log::info("VU0 check at 0x{:04X}: same", address);
+    }
+}
+
+// Logs VU0 code the game uploads that tgr-vurecomp has not compiled, with
+// where it sits in the ELF image the runtime loaded into RAM.
 void reportUpload(PS2Runtime& runtime, std::uint32_t address, std::uint32_t bytes)
 {
     const std::uint8_t* code = runtime.memory().getVU0Code() + address;
@@ -143,7 +225,7 @@ void reportUpload(PS2Runtime& runtime, std::uint32_t address, std::uint32_t byte
                   address);
         return;
     }
-    log::warn("VU0: uploaded code is not compiled. Add to recomp/config/SCUS-97133.vu.csv: 0,0x{:08X},0x{:X},0x{:X}",
+    log::warn("VU0: uploaded code is not compiled: ELF 0x{:08X}, {} bytes, loaded at 0x{:X}",
               static_cast<std::uint32_t>(found - rdram), bytes, address);
 }
 
@@ -206,7 +288,11 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
     vu0Code_ = std::make_unique<hw::vu::CodeMemory>(0, runtime->memory().getVU0Code(), PS2_VU0_CODE_SIZE);
     hw::vu::CodeMemory* vu0Code = vu0Code_.get();
     runtime_->setVu0MicroprogramHandler([runtime, vu0Code](std::uint8_t*, R5900Context* context, std::uint32_t address) {
-        runVu0(*runtime, *vu0Code, *context, address);
+        static const bool check = environmentFlag("TGR_VU_CHECK");
+        if (check)
+            checkVu0(*runtime, *vu0Code, *context, address);
+        else
+            runVu0(*runtime, *vu0Code, *context, address);
     });
     vif0_ = std::make_unique<hw::Vif0>(
         runtime->memory().getVU0Code(), runtime->memory().getVU0Data(),

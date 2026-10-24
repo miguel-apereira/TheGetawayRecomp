@@ -2,7 +2,7 @@
 #
 # Runs PS2Recomp's ps2_recomp on the extracted boot ELF using
 # recomp\config\SCUS-97133.toml, then tgr-vurecomp on the VU microprograms
-# listed in recomp\config\SCUS-97133.vu.csv. Output goes to recomp\generated
+# in its .vutext section. Output goes to recomp\generated
 # and recomp\generated\vu (git-ignored).
 #
 #   tools\scripts\recompile.ps1           # everything
@@ -10,7 +10,6 @@
 
 param(
     [string]$Config = 'recomp\config\SCUS-97133.toml',
-    [string]$VuPrograms = 'recomp\config\SCUS-97133.vu.csv',
     [string]$Preset = 'msvc-debug',
     [switch]$VuOnly
 )
@@ -34,4 +33,4 @@ if (-not $VuOnly) {
 $vurecomp = Find-BuiltTool 'tgr-vurecomp' $Preset
 New-Item -ItemType Directory -Force -Path 'recomp\generated\vu' | Out-Null
 Get-ChildItem 'recomp\generated\vu\*' -File -Include '*.cpp' | Remove-Item
-Invoke-Native $vurecomp @('iso\extracted\SCUS_971.33', $VuPrograms, 'recomp\generated\vu')
+Invoke-Native $vurecomp @('iso\extracted\SCUS_971.33', 'recomp\generated\vu')

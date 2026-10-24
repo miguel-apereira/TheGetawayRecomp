@@ -2,17 +2,11 @@
 //
 // tgr-vurecomp: compiles the game's VU microprograms to C++ ahead of time.
 //
-//   tgr-vurecomp <SCUS_971.33> <programs.csv> <out-dir>
+//   tgr-vurecomp <SCUS_971.33> <out-dir>
 //
-// programs.csv lists one microprogram per line, as the game uploads it with
-// a VIF MPG command:
-//
-//   unit,elf_address,size,load_address
-//   0,0x0034A120,0x400,0x0
-//
-// unit is 0 or 1, elf_address is where the code sits in the ELF, size is in
-// bytes and load_address is where the game puts it in VU code memory. Lines
-// starting with # are comments.
+// It finds the microprograms in the ELF's .vutext section, where the game
+// keeps them as the DMA packets that upload them (VIF MPG commands give each
+// piece's load address), so no list of programs has to be kept by hand.
 //
 // For every program it writes <out-dir>/vu<unit>_<elf_address>.cpp with one
 // function that runs the program from any of its instructions on the model
@@ -41,19 +35,13 @@ namespace
 struct ProgramEntry
 {
     int unit = 0;
-    std::uint32_t elfAddress = 0;
+    std::uint32_t elfAddress = 0; // first piece
     std::uint32_t size = 0;
     std::uint32_t loadAddress = 0;
+    std::vector<std::uint8_t> code;
 };
 
 // ---- ELF ------------------------------------------------------------------
-
-struct Segment
-{
-    std::uint32_t address;
-    std::uint32_t offset;
-    std::uint32_t fileSize;
-};
 
 std::uint32_t read32(const std::vector<std::uint8_t>& bytes, std::size_t offset)
 {
@@ -71,39 +59,77 @@ std::uint16_t read16(const std::vector<std::uint8_t>& bytes, std::size_t offset)
     return value;
 }
 
-std::vector<Segment> loadSegments(const std::vector<std::uint8_t>& elf)
+struct Section
 {
-    std::vector<Segment> segments;
-    if (elf.size() < 0x34 || std::memcmp(elf.data(), "\x7F" "ELF", 4) != 0)
-        return segments;
-    const std::uint32_t phoff = read32(elf, 0x1C);
-    const std::uint16_t phentsize = read16(elf, 0x2A);
-    const std::uint16_t phnum = read16(elf, 0x2C);
-    for (std::uint16_t i = 0; i < phnum; ++i)
-    {
-        const std::size_t ph = phoff + static_cast<std::size_t>(i) * phentsize;
-        if (read32(elf, ph) != 1) // PT_LOAD
-            continue;
-        segments.push_back({read32(elf, ph + 8), read32(elf, ph + 4), read32(elf, ph + 16)});
-    }
-    return segments;
-}
+    std::uint32_t address = 0;
+    std::uint32_t offset = 0;
+    std::uint32_t size = 0;
+};
 
-std::optional<std::vector<std::uint8_t>> readProgram(const std::vector<std::uint8_t>& elf,
-                                                     const std::vector<Segment>& segments, std::uint32_t address,
-                                                     std::uint32_t size)
+std::optional<Section> findSection(const std::vector<std::uint8_t>& elf, const std::string& wanted)
 {
-    for (const Segment& segment : segments)
+    if (elf.size() < 0x34 || std::memcmp(elf.data(), "\x7F" "ELF", 4) != 0)
+        return std::nullopt;
+    const std::uint32_t shoff = read32(elf, 0x20);
+    const std::uint16_t shentsize = read16(elf, 0x2E);
+    const std::uint16_t shnum = read16(elf, 0x30);
+    const std::uint16_t shstrndx = read16(elf, 0x32);
+    const std::uint32_t names = read32(elf, shoff + static_cast<std::size_t>(shstrndx) * shentsize + 16);
+    for (std::uint16_t i = 0; i < shnum; ++i)
     {
-        if (address >= segment.address && address + size <= segment.address + segment.fileSize)
+        const std::size_t header = shoff + static_cast<std::size_t>(i) * shentsize;
+        const std::size_t nameOffset = names + read32(elf, header);
+        if (nameOffset >= elf.size())
+            continue;
+        const char* name = reinterpret_cast<const char*>(elf.data() + nameOffset);
+        if (wanted == std::string(name, strnlen(name, elf.size() - nameOffset)))
         {
-            const std::size_t offset = segment.offset + (address - segment.address);
-            if (offset + size > elf.size())
+            Section section{read32(elf, header + 12), read32(elf, header + 16), read32(elf, header + 20)};
+            if (static_cast<std::size_t>(section.offset) + section.size > elf.size())
                 return std::nullopt;
-            return std::vector<std::uint8_t>(elf.begin() + offset, elf.begin() + offset + size);
+            return section;
         }
     }
     return std::nullopt;
+}
+
+// The game's microprograms sit in .vutext as the DMA packets that upload
+// them: each MPG VIFcode (bits 24-30 = 0x4A, NUM instructions to address
+// IMMEDIATE * 8) is followed by its code. A program bigger than one MPG (256
+// instructions) is a run of MPGs whose load addresses follow on; it starts
+// again when an MPG goes back to a lower address.
+std::vector<ProgramEntry> scanPrograms(const std::vector<std::uint8_t>& elf, const Section& vutext)
+{
+    std::vector<ProgramEntry> programs;
+    std::uint32_t position = 0;
+    while (position + 4 <= vutext.size)
+    {
+        const std::uint32_t word = read32(elf, vutext.offset + position);
+        // VIFcodes in a DMA packet follow the 8-byte tag, so never at the start of a quadword.
+        if (((word >> 24) & 0x7F) != 0x4A || position % 16 == 0)
+        {
+            position += 4;
+            continue;
+        }
+        const std::uint32_t count = ((word >> 16) & 0xFF) == 0 ? 256 : (word >> 16) & 0xFF;
+        const std::uint32_t loadAddress = (word & 0xFFFF) * 8;
+        const std::uint32_t bytes = count * 8;
+        const std::uint32_t codeOffset = vutext.offset + position + 4;
+        if (position + 4 + bytes > vutext.size)
+            break;
+        if (programs.empty() || programs.back().loadAddress + programs.back().size != loadAddress)
+        {
+            ProgramEntry program;
+            program.elfAddress = vutext.address + position + 4;
+            program.loadAddress = loadAddress;
+            programs.push_back(program);
+        }
+        ProgramEntry& program = programs.back();
+        program.code.insert(program.code.end(), elf.begin() + codeOffset, elf.begin() + codeOffset + bytes);
+        program.size += bytes;
+        position += 4 + bytes;
+    }
+    return programs;
 }
 
 // FNV-1a, 64-bit: matches tgr::hw::vu::programHash.
@@ -926,110 +952,69 @@ struct Translator
     }
 };
 
-std::vector<ProgramEntry> readPrograms(const fs::path& path, std::string& error)
-{
-    std::vector<ProgramEntry> programs;
-    std::ifstream in(path);
-    if (!in)
-    {
-        error = "cannot open " + path.string();
-        return programs;
-    }
-    std::string line;
-    int lineNumber = 0;
-    while (std::getline(in, line))
-    {
-        ++lineNumber;
-        if (const auto hash = line.find('#'); hash != std::string::npos)
-            line.resize(hash);
-        if (line.find_first_not_of(" \t\r") == std::string::npos || line.rfind("unit", 0) == 0)
-            continue;
-        ProgramEntry entry;
-        char* cursor = line.data();
-        entry.unit = static_cast<int>(std::strtoul(cursor, &cursor, 0));
-        std::uint32_t* fields[3] = {&entry.elfAddress, &entry.size, &entry.loadAddress};
-        bool ok = true;
-        for (std::uint32_t* field : fields)
-        {
-            if (*cursor != ',')
-            {
-                ok = false;
-                break;
-            }
-            *field = static_cast<std::uint32_t>(std::strtoul(cursor + 1, &cursor, 0));
-        }
-        if (!ok || (entry.unit != 0 && entry.unit != 1) || entry.size == 0 || entry.size % 8 != 0)
-        {
-            error = std::format("{}:{}: expected unit,elf_address,size,load_address", path.string(), lineNumber);
-            return {};
-        }
-        programs.push_back(entry);
-    }
-    return programs;
-}
-
 } // namespace
 
 int main(int argc, char** argv)
 {
-    if (argc != 4)
+    if (argc != 3)
     {
-        std::fputs("usage: tgr-vurecomp <SCUS_971.33> <programs.csv> <out-dir>\n", stderr);
+        std::fputs("usage: tgr-vurecomp <SCUS_971.33> <out-dir>\n", stderr);
         return 2;
     }
     std::ifstream elfFile(argv[1], std::ios::binary);
     const std::vector<std::uint8_t> elf((std::istreambuf_iterator<char>(elfFile)), std::istreambuf_iterator<char>());
-    const std::vector<Segment> segments = loadSegments(elf);
-    if (segments.empty())
+    const std::optional<Section> vutext = findSection(elf, ".vutext");
+    if (!vutext)
     {
-        std::fprintf(stderr, "%s is not an ELF with loadable segments\n", argv[1]);
+        std::fprintf(stderr, "%s has no .vutext section\n", argv[1]);
         return 1;
     }
-    std::string error;
-    const std::vector<ProgramEntry> programs = readPrograms(argv[2], error);
-    if (!error.empty())
-    {
-        std::fprintf(stderr, "%s\n", error.c_str());
-        return 1;
-    }
+    const std::vector<ProgramEntry> programs = scanPrograms(elf, *vutext);
 
-    const fs::path outDir = argv[3];
+    const fs::path outDir = argv[2];
     std::error_code ec;
     fs::create_directories(outDir, ec);
 
     std::ostringstream table;
     std::ostringstream declarations;
     int warnings = 0;
-    for (const ProgramEntry& entry : programs)
+    int compiled = 0;
+    for (const ProgramEntry& found : programs)
     {
-        const auto code = readProgram(elf, segments, entry.elfAddress, entry.size);
-        if (!code)
+        // The packets do not say which VU they are for: a program that fits
+        // VU0's 4 KB of code memory is compiled for both.
+        for (int unit = 0; unit < 2; ++unit)
         {
-            std::fprintf(stderr, "VU%d program at 0x%08X (%u bytes) is not inside the ELF\n", entry.unit,
-                         entry.elfAddress, entry.size);
-            return 1;
-        }
-        Translator translator;
-        translator.unit = entry.unit;
-        translator.codeMask = entry.unit == 0 ? 0xFFF : 0x3FFF;
-        const std::string name = std::format("vu{}_{:08X}", entry.unit, entry.elfAddress);
-        translator.out << "// Generated by tgr-vurecomp from the user's own SCUS_971.33. Do not commit.\n"
-                       << "#include \"hw/vu/VuCore.h\"\n#include \"hw/vu/VuEfu.h\"\n\n"
-                       << "namespace tgr::hw\n{\n\n";
-        translator.translate(entry, *code, name);
-        translator.out << "\n} // namespace tgr::hw\n";
-        for (const std::string& warning : translator.warnings)
-        {
-            std::fprintf(stderr, "%s: %s\n", name.c_str(), warning.c_str());
-            ++warnings;
-        }
+            const std::uint32_t codeSize = unit == 0 ? 0x1000 : 0x4000;
+            if (found.loadAddress + found.size > codeSize)
+                continue;
+            ProgramEntry entry = found;
+            entry.unit = unit;
 
-        std::ofstream file(outDir / (name + ".cpp"), std::ios::binary);
-        file << translator.out.str();
+            Translator translator;
+            translator.unit = unit;
+            translator.codeMask = codeSize - 1;
+            const std::string name = std::format("vu{}_{:08X}", unit, entry.elfAddress);
+            translator.out << "// Generated by tgr-vurecomp from the user's own SCUS_971.33. Do not commit.\n"
+                           << "#include \"hw/vu/VuCore.h\"\n#include \"hw/vu/VuEfu.h\"\n\n"
+                           << "namespace tgr::hw\n{\n\n";
+            translator.translate(entry, entry.code, name);
+            translator.out << "\n} // namespace tgr::hw\n";
+            // A VU1 program that fits VU0 reports EFU and XGKICK as reserved in its VU0 copy.
+            for (const std::string& warning : translator.warnings)
+            {
+                std::fprintf(stderr, "%s: %s\n", name.c_str(), warning.c_str());
+                ++warnings;
+            }
 
-        declarations << std::format("int {}(vu::State& s, std::uint32_t entry);\n", name);
-        table << std::format("    {{{}, 0x{:04X}, 0x{:X}, 0x{:016X}ull, 0x{:08X}, &{}}},\n", entry.unit, entry.loadAddress,
-                             entry.size, programHash(code->data(), code->size()), entry.elfAddress, name);
+            std::ofstream file(outDir / (name + ".cpp"), std::ios::binary);
+            file << translator.out.str();
+
+            declarations << std::format("int {}(vu::State& s, std::uint32_t entry);\n", name);
+            table << std::format("    {{{}, 0x{:04X}, 0x{:X}, 0x{:016X}ull, 0x{:08X}, &{}}},\n", unit, entry.loadAddress,
+                                 entry.size, programHash(entry.code.data(), entry.code.size()), entry.elfAddress, name);
+            ++compiled;
+        }
     }
 
     std::ofstream registry(outDir / "vu_programs.cpp", std::ios::binary);
@@ -1038,9 +1023,9 @@ int main(int argc, char** argv)
              << declarations.str() << "\nnamespace vu\n{\n\n"
              << "const ProgramInfo kPrograms[] = {\n"
              << table.str() << "    {0, 0, 0, 0, 0, nullptr},\n};\n"
-             << std::format("const std::size_t kProgramCount = {};\n", programs.size())
+             << std::format("const std::size_t kProgramCount = {};\n", compiled)
              << "\n} // namespace vu\n} // namespace tgr::hw\n";
 
-    std::printf("tgr-vurecomp: %zu programs, %d warnings\n", programs.size(), warnings);
+    std::printf("tgr-vurecomp: %zu programs in .vutext, %d compiled, %d warnings\n", programs.size(), compiled, warnings);
     return 0;
 }
