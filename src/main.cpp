@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <format>
@@ -420,6 +421,16 @@ int main(int argc, char** argv)
     std::vector<std::uint8_t> picture;
     std::uint32_t pictureWidth = 0;
     std::uint32_t pictureHeight = 0;
+
+    // The window title shows the game's speed as the vblanks it got over about
+    // a second (the PS2's 60 at full speed), and the renderer drawing it.
+    using Clock = std::chrono::steady_clock;
+    const auto setTitle = [&](long fps) {
+        SDL_SetWindowTitle(window, std::format("{} | FPS: {} | {}", game::kTitle, fps, guest.rendererName()).c_str());
+    };
+    setTitle(0);
+    Clock::time_point fpsSince = Clock::now();
+    std::uint64_t fpsVsyncs = guest.vsyncCount();
 #endif
 
     bool running = true;
@@ -453,6 +464,16 @@ int main(int argc, char** argv)
         {
             log::info("The game thread returned at guest PC 0x{:08X}", guest.pc());
             guestReported = true;
+        }
+
+        const Clock::time_point now = Clock::now();
+        if (now - fpsSince >= std::chrono::seconds(1))
+        {
+            const std::uint64_t vsyncs = guest.vsyncCount();
+            const double seconds = std::chrono::duration<double>(now - fpsSince).count();
+            setTitle(std::lround(static_cast<double>(vsyncs - fpsVsyncs) / seconds));
+            fpsSince = now;
+            fpsVsyncs = vsyncs;
         }
 #endif
 

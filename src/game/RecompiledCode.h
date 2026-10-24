@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class PS2Runtime;
@@ -68,6 +69,13 @@ public:
 
     // Every EE thread with its state, PC and what it waits on, one per line.
     std::string threadStates() const;
+
+    // Vertical blanks the guest has seen since it started. The PS2 has 60 a
+    // second, so their rate is the game's speed: 60 means full speed.
+    std::uint64_t vsyncCount() const;
+
+    // The graphics backend drawing the GS picture, for the window title.
+    std::string_view rendererName() const;
 
     // A 32-bit word of EE memory, for progress logs (no synchronisation).
     std::uint32_t peek(std::uint32_t address) const;

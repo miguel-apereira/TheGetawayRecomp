@@ -455,6 +455,17 @@ std::string Guest::hardwareStats() const
                        memory.gsWriteCount(), memory.vifWriteCount());
 }
 
+std::uint64_t Guest::vsyncCount() const
+{
+    return runtime_ ? runtime_->memory().gs().vsyncTick.load(std::memory_order_acquire) : 0;
+}
+
+std::string_view Guest::rendererName() const
+{
+    // PS2Recomp's CPU GS backend, until the native Vulkan GS renderer replaces it.
+    return "Software";
+}
+
 std::string Guest::threadStates() const
 {
     if (!runtime_)
