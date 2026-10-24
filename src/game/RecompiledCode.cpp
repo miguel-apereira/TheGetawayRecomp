@@ -21,6 +21,16 @@
 #include <unordered_set>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <dbghelp.h>
+#include <mutex>
+#pragma comment(lib, "dbghelp.lib")
+#endif
+
 namespace tgr::game
 {
 
@@ -39,6 +49,123 @@ bool environmentFlag(const char* name)
     return std::getenv(name) != nullptr;
 #endif
 }
+
+#ifdef _WIN32
+// Debugging aid (TGR_WATCH_WRITE=0xADDR): makes the host page holding that EE
+// address read-only and logs each new piece of code that writes the 16 bytes
+// there, with the generated source line (whose comment names the guest
+// instruction) and the value written.
+struct WriteWatch
+{
+    std::uint8_t* target = nullptr;
+    std::uint8_t* page = nullptr;
+    std::uint32_t guestAddress = 0;
+    std::mutex mutex;
+    std::unordered_set<std::uintptr_t> writers;
+};
+WriteWatch g_watch;
+thread_local std::uintptr_t t_watchWriter = 0;
+
+void protectWatchPage()
+{
+    DWORD old;
+    VirtualProtect(g_watch.page, 4096, PAGE_READONLY, &old);
+}
+
+LONG CALLBACK watchHandler(EXCEPTION_POINTERS* info)
+{
+    const DWORD code = info->ExceptionRecord->ExceptionCode;
+    if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->ExceptionInformation[0] == 1)
+    {
+        auto* address = reinterpret_cast<std::uint8_t*>(info->ExceptionRecord->ExceptionInformation[1]);
+        if (address < g_watch.page || address >= g_watch.page + 4096)
+            return EXCEPTION_CONTINUE_SEARCH;
+        DWORD old;
+        VirtualProtect(g_watch.page, 4096, PAGE_READWRITE, &old);
+        t_watchWriter = 0;
+        if (address + 16 > g_watch.target && address < g_watch.target + 16)
+        {
+            // The store is usually in a memory helper; walk out to the
+            // generated function that called it.
+            std::lock_guard lock(g_watch.mutex);
+            CONTEXT context = *info->ContextRecord;
+            STACKFRAME64 frame = {};
+            frame.AddrPC.Offset = context.Rip;
+            frame.AddrPC.Mode = AddrModeFlat;
+            frame.AddrStack.Offset = context.Rsp;
+            frame.AddrStack.Mode = AddrModeFlat;
+            frame.AddrFrame.Offset = context.Rbp;
+            frame.AddrFrame.Mode = AddrModeFlat;
+            for (int depth = 0; depth < 6; ++depth)
+            {
+                if (!StackWalk64(IMAGE_FILE_MACHINE_AMD64, GetCurrentProcess(), GetCurrentThread(), &frame, &context,
+                                 nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr))
+                    break;
+                alignas(8) char buffer[sizeof(SYMBOL_INFO) + 256] = {};
+                auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 displacement = 0;
+                if (SymFromAddr(GetCurrentProcess(), frame.AddrPC.Offset, &displacement, symbol) &&
+                    std::strncmp(symbol->Name, "Ps2", 3) != 0 && std::strstr(symbol->Name, "write") == nullptr &&
+                    std::strstr(symbol->Name, "Write") == nullptr)
+                {
+                    t_watchWriter = static_cast<std::uintptr_t>(frame.AddrPC.Offset);
+                    break;
+                }
+            }
+        }
+        info->ContextRecord->EFlags |= 0x100; // single-step the store, then protect again
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (code == EXCEPTION_SINGLE_STEP && g_watch.page)
+    {
+        protectWatchPage();
+        if (const std::uintptr_t rip = t_watchWriter)
+        {
+            t_watchWriter = 0;
+            std::lock_guard lock(g_watch.mutex);
+            if (g_watch.writers.size() < 64 && g_watch.writers.insert(rip).second)
+            {
+                alignas(8) char buffer[sizeof(SYMBOL_INFO) + 256] = {};
+                auto* symbol = reinterpret_cast<SYMBOL_INFO*>(buffer);
+                symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+                symbol->MaxNameLen = 255;
+                DWORD64 displacement = 0;
+                const bool named = SymFromAddr(GetCurrentProcess(), rip, &displacement, symbol);
+                IMAGEHLP_LINE64 line = {};
+                line.SizeOfStruct = sizeof(line);
+                DWORD lineDisplacement = 0;
+                const bool lined = SymGetLineFromAddr64(GetCurrentProcess(), rip, &lineDisplacement, &line);
+                float value[4];
+                std::memcpy(value, g_watch.target, 16);
+                log::warn("watch [{:08X}] written by {}+0x{:X} ({}:{}): {} {} {} {}", g_watch.guestAddress,
+                          named ? symbol->Name : "?", displacement, lined ? line.FileName : "?",
+                          lined ? line.LineNumber : 0, value[0], value[1], value[2], value[3]);
+            }
+        }
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void startWriteWatch(PS2Runtime& runtime)
+{
+    char* value = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&value, &size, "TGR_WATCH_WRITE") != 0 || value == nullptr)
+        return;
+    g_watch.guestAddress = static_cast<std::uint32_t>(std::strtoul(value, nullptr, 0)) & ~15u;
+    std::free(value);
+    SymSetOptions(SYMOPT_LOAD_LINES | SYMOPT_UNDNAME);
+    SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+    g_watch.target = runtime.memory().getRDRAM() + g_watch.guestAddress;
+    g_watch.page = reinterpret_cast<std::uint8_t*>(reinterpret_cast<std::uintptr_t>(g_watch.target) & ~std::uintptr_t{4095});
+    AddVectoredExceptionHandler(1, watchHandler);
+    protectWatchPage();
+    log::info("Watching writes to EE 0x{:08X}", g_watch.guestAddress);
+}
+#endif
 
 std::uint32_t floatBits(float value)
 {
@@ -355,6 +482,10 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
     // EE kernel leaves to programs and this game never uses: a small heap for
     // SIF and GS packets, then stacks for interrupt handlers and callbacks.
     runtime_->reserveRuntimeGuestMemory(0x00080000, 0x000A0000, 0x000A0000, 0x00100000);
+
+#ifdef _WIN32
+    startWriteWatch(*runtime_);
+#endif
 
     pfs_ = std::make_unique<Pfs>(gameDataDir);
     pfs_->install(*runtime_);
