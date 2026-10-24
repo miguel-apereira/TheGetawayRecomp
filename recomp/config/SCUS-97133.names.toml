@@ -23,4 +23,8 @@ names = [
   "newlib_malloc_trim_r@0x00319368",
   "newlib_calloc_r@0x0031B4E8",
   "newlib_realloc_r@0x0031B608",
+
+  # The runtime's sprintf cuts its output at 255 characters, which cut the
+  # boot disclaimer off at "...set in p". The game's own sprintf has no limit.
+  "newlib_sprintf@0x00312688",
 ]

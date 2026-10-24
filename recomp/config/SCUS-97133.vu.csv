@@ -1,5 +1,0 @@
-# VU microprograms compiled ahead of time by tgr-vurecomp (tools/scripts/recompile.ps1).
-# One line per program as the game uploads it with a VIF MPG command:
-#   unit (0 or 1), address of the code in SCUS_971.33, size in bytes, load address in VU code memory.
-# The game logs "uploaded code is not compiled" with the line to add here.
-unit,elf_address,size,load_address

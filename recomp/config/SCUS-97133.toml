@@ -93,7 +93,6 @@ stubs = [
   "memset@0x00311A98",
   "printf@0x00311B70",
   "rand@0x003125F8",
-  "sprintf@0x00312688",
   "strcasecmp@0x003128F8",
   "strcat@0x003129AC",
   "strcmp@0x00312AD8",
@@ -235,10 +234,10 @@ skip = []
 function_count = 8043
 code_label_count = 38835
 csv_record_count = 46878
-stub_count = 179
+stub_count = 178
 untracked_stub_count = 23
 skip_count = 0
-uncategorized_count = 7841
+uncategorized_count = 7842
 runtime_call_name_count = 656
 runtime_call_source = "embedded_ps2_call_list_snapshot"
 
