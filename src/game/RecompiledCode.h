@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 class PS2Runtime;
@@ -14,6 +15,12 @@ class PS2Runtime;
 namespace tgr::hw
 {
 class Ipu;
+class Vif;
+namespace vu
+{
+class CodeMemory;
+struct State;
+}
 }
 
 // The C++ that ps2_recomp generated from SCUS_971.33 (recomp/generated),
@@ -63,6 +70,13 @@ public:
     // Every EE thread with its state, PC and what it waits on, one per line.
     std::string threadStates() const;
 
+    // Vertical blanks the guest has seen since it started. The PS2 has 60 a
+    // second, so their rate is the game's speed: 60 means full speed.
+    std::uint64_t vsyncCount() const;
+
+    // The graphics backend drawing the GS picture, for the window title.
+    std::string_view rendererName() const;
+
     // A 32-bit word of EE memory, for progress logs (no synchronisation).
     std::uint32_t peek(std::uint32_t address) const;
 
@@ -83,6 +97,11 @@ private:
     std::unique_ptr<Pfs> pfs_;
     std::unique_ptr<Stream> stream_;
     std::unique_ptr<hw::Ipu> ipu_;
+    std::unique_ptr<hw::vu::CodeMemory> vu0Code_;
+    std::unique_ptr<hw::vu::CodeMemory> vu1Code_;
+    std::unique_ptr<hw::vu::State> vu1_; // VU1's registers live between microprograms
+    std::unique_ptr<hw::Vif> vif0_;
+    std::unique_ptr<hw::Vif> vif1_;
     bool started_ = false;
 };
 

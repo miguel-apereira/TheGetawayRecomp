@@ -33,6 +33,7 @@ include(TgrDependencies)
 
 add_subdirectory(src)
 add_subdirectory(tools/disc)
+add_subdirectory(tools/vurecomp)
 if(WIN32)
     add_subdirectory(tools/profile)
 endif()

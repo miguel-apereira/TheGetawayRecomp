@@ -131,7 +131,12 @@ itself does not throw.
 tools\scripts\recompile.ps1
 ```
 
-Clears `recomp/generated/` and writes the C++ there.
+Writes the C++ to `recomp/generated/`. The config sets `incremental_output`,
+so ps2_recomp only rewrites files whose content changed and deletes the files
+of functions that no longer exist; the next build then recompiles only what
+changed. Each function file declares just the functions it calls rather than
+including `ps2_recompiled_functions.h`, so adding or renaming a function does
+not touch the others. `-Clean` empties the folder first.
 
 ## 4. Build with the generated code
 

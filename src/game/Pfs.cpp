@@ -304,16 +304,19 @@ double Pfs::iopSoundSeconds(const std::string& name)
     {
         return 0;
     }
-    // VAG header: "VAGp", then big-endian data size at 0x0C and sample rate at 0x10.
+    // VAG header: "VAGp", then big-endian data size at 0x0C and sample rate at
+    // 0x10. The speech streams (STR\*.VAG) leave the magic zeroed but keep both.
     const auto be32 = [&](std::size_t at) {
         return std::uint32_t{header[at]} << 24 | std::uint32_t{header[at + 1]} << 16 |
                std::uint32_t{header[at + 2]} << 8 | header[at + 3];
     };
-    if (header.size() < 0x30 || std::memcmp(header.data(), "VAGp", 4) != 0)
+    if (header.size() < 0x30)
         return 0;
     const std::uint32_t bytes = be32(0x0C);
     const std::uint32_t rate = be32(0x10);
-    return rate ? (bytes / 16.0) * 28.0 / rate : 0;
+    if (rate < 4000 || rate > 96000)
+        return 0;
+    return (bytes / 16.0) * 28.0 / rate;
 }
 
 void Pfs::loadStreamSlot(std::uint32_t slot, const std::string& name)

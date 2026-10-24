@@ -111,6 +111,9 @@ $generated = Get-Content $exportToml | ForEach-Object {
             # Indirect calls return to their own resume entry; only unresolved
             # JR jumps need every instruction of their function as an entry.
             'jalr_indirect_fallback = false'
+            # Leave unchanged files alone and delete stale ones, so a rebuild
+            # after recompiling only compiles the functions that changed.
+            'incremental_output = true'
         }
         default             { $_ }
     }
