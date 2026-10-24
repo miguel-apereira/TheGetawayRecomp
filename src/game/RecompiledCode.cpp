@@ -552,9 +552,21 @@ bool Guest::start(const std::filesystem::path& gameDataDir, std::string& error)
                                       std::move(vif1Host));
     runtime_->memory().setVif1Device(vif1_.get());
 
+    if (gsToolOptions_.dumpPath || gsToolOptions_.inventoryPath)
+        gsTools_ = std::make_unique<GsTools>(runtime_->gs(), runtime_->memory().gs(), runtime_->memory().getGSVRAM(),
+                                             gsToolOptions_);
+
     runtime_->startGuest();
     started_ = true;
     return true;
+}
+
+void Guest::toggleGsDump()
+{
+    if (gsTools_)
+        gsTools_->toggleDump();
+    else
+        log::warn("GS dump: start the game with --gs-dump <folder> to record dumps with F9");
 }
 
 bool Guest::finished() const
@@ -642,6 +654,8 @@ void Guest::stop()
         runtime_->stopGuest();
         started_ = false;
     }
+    if (gsTools_)
+        gsTools_->finish();
     if (runtime_)
         runtime_->memory().setIpuDevice(nullptr);
 }

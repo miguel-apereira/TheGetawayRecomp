@@ -47,8 +47,11 @@
 | `src/disc/` | `IsoImage` (ISO9660), `SystemCnf`, `checkGameDisc`, `GameData` (one-time extraction), CRC-32 |
 | `src/host/` | `VulkanRenderer` (instance, device, swapchain). Audio and input to follow |
 | `src/game/` | `GameBuild.h` (serial, ELF name, CRC pin); game overrides will live here |
-| `src/hw/` | Planned: native GS, VU, DMAC/VIF/GIF, SPU2, IPU, pad and memory card |
+| `src/hw/` | Native hardware: IPU, VIF0/VIF1, VU microprograms compiled to C++; planned: SPU2, pad and memory card |
+| `src/hw/gs/` | Our GS frontend (see docs/GS_RENDERER.md): GIF parser, GS register state, GS inventory, GS dumps |
 | `tools/disc/` | `tgr-disc` command line tool |
+| `tools/gsreplay/` | `tgr-gsreplay`: replays GS dumps headless through a GS renderer |
+| `tests/` | `ctest` tests on hand-written data |
 
 ## Milestones
 

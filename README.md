@@ -122,6 +122,17 @@ guest PC every two seconds; add `--seconds <n>` to stop after a while,
 `--dump-frames <dir>` to save the picture every two seconds, and
 `--threads` or `--watch <address>` for more state in the log.
 
+To measure what the game asks of the GS (for the native renderer),
+`--gs-inventory <file>` writes a report when the game stops: primitive
+types, formats, blend equations, alpha and depth tests, textures read from
+render targets, transfers and display modes. `--gs-dump <folder>` records
+GS dumps: press F9 in the window to record the next 600 vsyncs, or pass
+`--gs-dump-start <vsync>` (the headless log prints the vsync count) and
+`--gs-dump-vsyncs <n>`. `tgr-gsreplay <dump> --images <dir> --inventory -`
+plays a dump back headless through the software GS, saving each frame and
+printing its inventory and timings. Dumps contain game data: they stay out
+of git.
+
 Visual Studio can also open the folder directly and pick up `CMakePresets.json`.
 
 The full recompilation pipeline, including how to redo the Ghidra analysis
@@ -133,8 +144,10 @@ that produced `recomp/config/`, is described in [docs/PIPELINE.md](docs/PIPELINE
 |---|---|---|
 | `src/` | Our code: host (SDL3, Vulkan), disc access, hardware replacements (`src/hw`), game glue (`src/game`) | yes |
 | `tools/disc/` | `tgr-disc`: inspect and extract your ISO and its PAK archives | yes |
+| `tools/gsreplay/` | `tgr-gsreplay`: replays a GS dump headless, with images, timings and the GS inventory | yes |
 | `tools/profile/` | `tgr-profile`: sampling profiler for the running game | yes |
 | `tools/scripts/` | PowerShell scripts for the pipeline | yes |
+| `tests/` | Tests on hand-written data (no game data); run with `ctest` | yes |
 | `recomp/config/` | PS2Recomp config and function map for SCUS-97133 | yes |
 | `recomp/generated/` | C++ generated from your ELF | **no** |
 | `external/` | Submodules: PS2Recomp (our fork), SDL, Vulkan-Headers, volk | pinned |

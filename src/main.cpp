@@ -11,6 +11,7 @@
 // recompiled game on its own thread. --headless runs the game with no window
 // at all, for machines without a usable Vulkan driver and for automated runs.
 
+#include "app/Bmp.h"
 #include "app/Log.h"
 #include "disc/GameData.h"
 #include "disc/GameDisc.h"
@@ -63,6 +64,10 @@ struct Options
     std::optional<fs::path> dumpFrames; // --dump-frames <dir>: save the displayed picture with each log line
     bool threads = false;              // --threads: log every EE thread with each log line
     std::vector<std::string> presses;  // --press BUTTON@SECONDS: scripted pad press (repeatable)
+    std::optional<fs::path> gsDump;    // --gs-dump <folder or .tgrgs>: record GS dumps (F9, or --gs-dump-start)
+    std::optional<std::uint64_t> gsDumpStart; // --gs-dump-start <vsync>: start a GS dump at this vsync
+    std::uint64_t gsDumpVsyncs = 600;  // --gs-dump-vsyncs <n>: vsyncs per GS dump
+    std::optional<fs::path> gsInventory; // --gs-inventory <file>: write the GS inventory there when the game stops
 };
 
 // Set from --headless: errors go to the log only, never to a message box.
@@ -92,6 +97,14 @@ Options parseArgs(int argc, char** argv)
             options.threads = true;
         else if (arg == "--dump-frames" && i + 1 < argc)
             options.dumpFrames = pathFromUtf8(argv[++i]);
+        else if (arg == "--gs-dump" && i + 1 < argc)
+            options.gsDump = pathFromUtf8(argv[++i]);
+        else if (arg == "--gs-dump-start" && i + 1 < argc)
+            options.gsDumpStart = std::strtoull(argv[++i], nullptr, 0);
+        else if (arg == "--gs-dump-vsyncs" && i + 1 < argc)
+            options.gsDumpVsyncs = std::strtoull(argv[++i], nullptr, 0);
+        else if (arg == "--gs-inventory" && i + 1 < argc)
+            options.gsInventory = pathFromUtf8(argv[++i]);
         else if (arg == "--watch" && i + 1 < argc)
             options.watch.push_back(static_cast<std::uint32_t>(std::strtoul(argv[++i], nullptr, 0)));
         else
@@ -242,41 +255,18 @@ bool ensureGameData(SDL_Window* window, const Options& options, const fs::path& 
 }
 
 #ifdef TGR_WITH_RECOMPILED_CODE
-// Writes RGBA8 rows as a 32-bit BMP.
-bool writeBmp(const fs::path& path, const std::vector<std::uint8_t>& rgba, std::uint32_t width, std::uint32_t height)
-{
-    std::ofstream out(path, std::ios::binary);
-    if (!out)
-        return false;
-    const std::uint32_t imageBytes = width * height * 4;
-    const auto u16 = [&](std::uint16_t v) { out.write(reinterpret_cast<const char*>(&v), 2); };
-    const auto u32 = [&](std::uint32_t v) { out.write(reinterpret_cast<const char*>(&v), 4); };
-    out.write("BM", 2);
-    u32(14 + 40 + imageBytes);
-    u32(0);
-    u32(14 + 40);
-    u32(40);
-    u32(width);
-    u32(static_cast<std::uint32_t>(-static_cast<std::int32_t>(height))); // top-down rows
-    u16(1);
-    u16(32);
-    u32(0); // BI_RGB
-    u32(imageBytes);
-    u32(2835);
-    u32(2835);
-    u32(0);
-    u32(0);
-    std::vector<std::uint8_t> bgra(rgba.begin(), rgba.begin() + std::min<std::size_t>(rgba.size(), imageBytes));
-    for (std::size_t i = 0; i + 3 < bgra.size(); i += 4)
-        std::swap(bgra[i], bgra[i + 2]);
-    bgra.resize(imageBytes);
-    out.write(reinterpret_cast<const char*>(bgra.data()), static_cast<std::streamsize>(bgra.size()));
-    return static_cast<bool>(out);
-}
-
 // Starts the recompiled game on its own thread.
-bool startGuest(SDL_Window* window, game::Guest& guest, const fs::path& dataPath)
+bool startGuest(SDL_Window* window, game::Guest& guest, const Options& options, const fs::path& dataPath)
 {
+    game::GsToolOptions gsTools;
+    gsTools.dumpPath = options.gsDump;
+    gsTools.dumpStart = options.gsDumpStart;
+    gsTools.dumpVsyncs = options.gsDumpVsyncs;
+    gsTools.inventoryPath = options.gsInventory;
+    if (!window && gsTools.dumpPath && !gsTools.dumpStart)
+        gsTools.dumpStart = 0; // no F9 without a window: start at the first vsync
+    guest.setGsTools(std::move(gsTools));
+
     std::string error;
     if (!guest.start(dataPath, error))
     {
@@ -306,7 +296,7 @@ int runHeadless(const Options& options, const fs::path& dataPath)
     guest.setPadReader([&pad](int port, std::uint8_t* data, std::size_t size) {
         return port == 0 && pad.read(data, size);
     });
-    if (!startGuest(nullptr, guest, dataPath))
+    if (!startGuest(nullptr, guest, options, dataPath))
         return 1;
 
     using Clock = std::chrono::steady_clock;
@@ -323,7 +313,8 @@ int runHeadless(const Options& options, const fs::path& dataPath)
             std::string watched;
             for (const std::uint32_t address : options.watch)
                 watched += std::format(" [{:08X}]={:08X}", address, guest.peek(address));
-            log::info("[{:.0f}s] guest PC 0x{:08X} {}{}", elapsed, guest.pc(), guest.hardwareStats(), watched);
+            log::info("[{:.0f}s] vsync {} guest PC 0x{:08X} {}{}", elapsed, guest.vsyncCount(), guest.pc(),
+                      guest.hardwareStats(), watched);
             if (options.threads)
                 log::info("EE threads:\n{}", guest.threadStates());
             nextReport += std::chrono::seconds(2);
@@ -410,7 +401,7 @@ int main(int argc, char** argv)
     guest.setPadReader([&pad](int port, std::uint8_t* data, std::size_t size) {
         return port == 0 && pad.read(data, size);
     });
-    if (!startGuest(window, guest, dataPath))
+    if (!startGuest(window, guest, options, dataPath))
     {
         renderer.shutdown();
         SDL_DestroyWindow(window);
@@ -447,6 +438,12 @@ int main(int argc, char** argv)
             case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
                 renderer.requestSwapchainRebuild();
                 break;
+#ifdef TGR_WITH_RECOMPILED_CODE
+            case SDL_EVENT_KEY_DOWN:
+                if (event.key.key == SDLK_F9 && !event.key.repeat)
+                    guest.toggleGsDump();
+                break;
+#endif
             default:
                 break;
             }
