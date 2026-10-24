@@ -1,8 +1,8 @@
 # Native GS renderer: design
 
-Status: **design agreed** (2026-10-23). Nothing here is built yet. Miguel's
-answers to the open questions are recorded in [Decisions](#13-decisions).
-The work starts in its own thread once the New Game hang is fixed.
+Status: **design agreed** (2026-10-23). Nothing here is built yet. The
+choices it rests on are listed in [Decisions](#13-decisions). The work
+starts once the New Game hang is fixed.
 
 ## 1. Summary
 
@@ -327,7 +327,7 @@ bounded because we target one game and can measure every case it uses.
 
 ## 7. Performance plan
 
-Reference machine: Miguel's main PC, Ryzen 5 5600X and Radeon RX 6700 XT.
+Reference machine: the test PC, Ryzen 5 5600X and Radeon RX 6700 XT.
 Targets on it:
 
 | Budget per game frame | Target |
@@ -394,11 +394,11 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
   threshold fail. Small synthetic GIF tests (written by hand, no game data)
   cover formats, swizzles, blending and texture modes in the repo's tests.
 - **Reference images.** Screenshots from PCSX2's software renderer on
-  Miguel's main PC at the same moments, for scenes where the CPU backend is
+  the test PC at the same moments, for scenes where the CPU backend is
   wrong.
 - **Performance.** The same dumps timed in Release with GPU timestamps.
-- Running tests needs a Vulkan device. Images and timings come from Miguel's
-  main PC. A software Vulkan driver on the VM for headless replay tests is
+- Running tests needs a Vulkan device. Images and timings come from the
+  test PC. A software Vulkan driver on the VM for headless replay tests is
   tried only if it's easy.
 
 ## 11. Licensing and references
@@ -411,8 +411,7 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
   running program to compare against, and the design write-ups listed in
   section 4.
 - PCSX2's and the GPL ports' renderer source may be read to understand
-  behaviour (Miguel, 2026-10-23). Our code is written by us; nothing is
-  copied.
+  behaviour. Our code is written by us; nothing is copied.
 
 ## 12. Milestones
 
@@ -426,15 +425,15 @@ All new files carry `SPDX-License-Identifier: MIT` headers.
 | R5 | **Quality.** Upscaling and its fixes, anti-blur, output scaling | Clean 2x-4x image in the measured scenes |
 | later | Widescreen, 60 FPS (game patches) | After the port is playable |
 
-All of it, R0 included, starts after the New Game hang is fixed, in a new
-thread dedicated to the renderer, so the VM serves one thread at a time and
-the work is tested on real 3D scenes. Ahead-of-time compiled VU1 follows R2.
+All of it, R0 included, starts after the New Game hang is fixed, as its own
+line of work, so the dev VM runs one heavy job at a time and the work is
+tested on real 3D scenes. Ahead-of-time compiled VU1 follows R2.
 
 ## 13. Decisions
 
-Miguel answered the open questions on 2026-10-23.
+Settled on 2026-10-23.
 
-| # | Question | Decision |
+| # | Topic | Decision |
 |---|---|---|
 | 1 | Approach | Render-target renderer (A) only. Reconsider only if the inventory shows many framebuffer tricks |
 | 2 | Where to hook | Our own GS frontend through a small `GsHost` hook in the fork |
@@ -444,7 +443,7 @@ Miguel answered the open questions on 2026-10-23.
 | 6 | Default internal resolution | Match window. Must be a player setting, later in the launcher or an options menu |
 | 7 | Anti-blur | On by default. Must be a player setting too |
 | 8 | Reference hardware | Ryzen 5 5600X, Radeon RX 6700 XT |
-| 9 | Where GPU tests run | Miguel's main PC for images and timings; software Vulkan on the VM only if easy |
+| 9 | Where GPU tests run | The test PC for images and timings; software Vulkan on the VM only if easy |
 | 10 | Reading references | Read PCSX2 and the GPL ports' source for understanding; never copy |
 | 11 | VU1 | Ahead-of-time compiled VU1 is the next item after R2 |
-| 12 | When to start | After the New Game hang fix, in a new thread dedicated to the renderer |
+| 12 | When to start | After the New Game hang fix, as its own line of work |
